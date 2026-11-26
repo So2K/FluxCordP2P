@@ -28,28 +28,21 @@ if ($st) {
     git commit -m "Release v${ver}: P2P Stream Decode, Dual-Screen BGRA, Avatars, Dynamic Tray & Setup.exe"
 }
 
-# Obtain GitHub token via gh or git credential manager (never printed!)
+# Obtain GitHub token via Git Credential Manager (never printed!)
 $token = $null
-$ghExe = if (Get-Command gh -ErrorAction SilentlyContinue) { "gh" } elseif (Test-Path "C:\Program Files\GitHub CLI\gh.exe") { "C:\Program Files\GitHub CLI\gh.exe" } else { $null }
-if ($ghExe) {
-    $token = (& $ghExe auth token 2>$null)
-}
-if ([string]::IsNullOrWhiteSpace($token)) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo("git", "credential fill")
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $proc.StandardInput.Write("protocol=https`nhost=github.com`nusername=So2K`n`n")
-    $proc.StandardInput.Close()
-    $credOut = $proc.StandardOutput.ReadToEnd() -split "`r?`n"
-    $proc.WaitForExit()
-    foreach ($line in $credOut) {
-        if ($line -match '^password=(.+)$') { $token = $Matches[1].Trim() }
-    }
-}
-if ([string]::IsNullOrWhiteSpace($token)) { throw "No GitHub token found in gh or git credential manager" }
+$psi = New-Object System.Diagnostics.ProcessStartInfo("git", "credential fill")
+$psi.UseShellExecute = $false
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$proc = [System.Diagnostics.Process]::Start($psi)
+$proc.StandardInput.WriteLine("protocol=https")
+$proc.StandardInput.WriteLine("host=github.com")
+$proc.StandardInput.WriteLine("")
+$proc.StandardInput.Close()
+$credRaw = $proc.StandardOutput.ReadToEnd()
+$proc.WaitForExit()
+if ($credRaw -match "password=([^\r\n]+)") { $token = $Matches[1].Trim() }
+if ([string]::IsNullOrWhiteSpace($token)) { throw "No GitHub token found in Git Credential Manager" }
 
 $headers = @{
     Authorization = "Bearer $token"
