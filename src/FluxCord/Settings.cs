@@ -30,6 +30,10 @@ public sealed class FluxSettings
     public bool AutoDownloadUpdates { get; set; } = true;
     public bool UpdaterV2Enabled { get; set; }
     public bool CloseToTray { get; set; } = true;
+    public bool LaunchWithWindows { get; set; }
+    public bool StartMinimized { get; set; }
+    public bool GlobalHotkeys { get; set; } = true;
+    public Dictionary<string, float> UserVolumes { get; set; } = new();
 
     // P2P + Jetson Orin Nano Identity & Room Config
     public string P2pUserId { get; set; } = "";

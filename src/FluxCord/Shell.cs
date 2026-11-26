@@ -695,6 +695,18 @@ public static unsafe partial class Shell
             _ = dc.TryImportFromDiscordAsync(silent: false);
             return;
         }
+        if (trimmed.StartsWith("/channel ", StringComparison.OrdinalIgnoreCase))
+        {
+            string cname = trimmed[9..].Trim();
+            if (!string.IsNullOrEmpty(cname)) { _ = dc.CreateChannelAsync(cname, isVoice: false); Toast($"✅ Создан текстовый канал #{cname}"); }
+            return;
+        }
+        if (trimmed.StartsWith("/voice ", StringComparison.OrdinalIgnoreCase))
+        {
+            string vname = trimmed[7..].Trim();
+            if (!string.IsNullOrEmpty(vname)) { _ = dc.CreateChannelAsync(vname, isVoice: true); Toast($"✅ Создан голосовой канал 🔊 {vname}"); }
+            return;
+        }
 
         if (!string.IsNullOrEmpty(_editingMsgId))
         {
@@ -2489,7 +2501,7 @@ public static unsafe partial class Shell
                     string szStr = fa.Size >= 1024 * 1024 ? $"{fa.Size / (1024f * 1024f):F1} МБ" : (fa.Size >= 1024 ? $"{fa.Size / 1024f:F0} КБ" : $"{fa.Size} Б");
                     Gfx.DrawText($"📄  {fa.Filename}", new R(fr.X + 10, fr.Y + 4, fr.W - 20, 16), 12.5f, Th.Cyan, 600);
                     Gfx.DrawText($"{szStr} • Нажмите, чтобы открыть/скачать", new R(fr.X + 10, fr.Y + 20, fr.W - 20, 14), 10.5f, Th.Dim);
-                    if (UI.Click(UI.Id("mfil_" + m.Id, fi), fr)) W.OpenUrl(fa.Url);
+                    if (UI.Click(UI.Id("mfil_" + m.Id, fi), fr)) _ = dc.OpenP2pFileLocallyAsync(fa.Url, fa.Filename);
                     cy += 44f;
                 }
                 for (int ei = 0; ei < m.Embeds.Length; ei++)
@@ -2551,7 +2563,7 @@ public static unsafe partial class Shell
                     // Solid top-right floating Discord action toolbar (never collides transparently over text!)
                     bool ownMsg = m.AuthorId == dc.Me.Id;
                     string? foundUrl = FindFirstHttpUrl(m.Content);
-                    float pillW = 4 * 26f + 60f + 52f + (foundUrl != null ? 58f : 0f) + (ownMsg ? 98f : 0f) + 12f;
+                    float pillW = 4 * 26f + 60f + 52f + 30f + (foundUrl != null ? 58f : 0f) + (ownMsg ? 98f : 0f) + 12f;
                     var pillR = new R(rowRect.Right - pillW - 6, msgTop + 2, pillW, 26);
                     Gfx.FillRect(pillR, 0xF416181F, 7);
                     Gfx.StrokeRect(pillR, Th.Border, 1, 7);
@@ -2569,6 +2581,12 @@ public static unsafe partial class Shell
                             _editingOrigText = m.Content;
                             App.SetChatInputText(_editingOrigText);
                         }
+                    }
+                    ax -= 28;
+                    if (UI.Button(UI.Id("mpin", mk), new R(ax, pillR.Y + 2, 26, 22), "📌", m.IsPinned ? 0x33F59E0Bu : 0x00000000u, m.IsPinned ? Th.Amber : Th.Sub, 5, 11))
+                    {
+                        _ = dc.PinMessageAsync(m.ChannelId, m.Id);
+                        Toast(m.IsPinned ? "Сообщение откреплено" : "📌 Сообщение закреплено");
                     }
                     if (foundUrl != null)
                     {

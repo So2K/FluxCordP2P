@@ -354,6 +354,11 @@ public sealed class DiscordClient
         IsDemoMode = false;
         IsConnecting = true;
         StatusText = "Поиск узла Jetson Orin Nano (LAN + P2P Hole-Punch)...";
+        if (SettingsStore.Current.UserVolumes != null)
+        {
+            foreach (var kv in SettingsStore.Current.UserVolumes)
+                _userVolumes[kv.Key] = Math.Clamp(kv.Value, 0f, 2f);
+        }
         Notify();
 
         _connCts = new CancellationTokenSource();
@@ -893,10 +898,15 @@ public sealed class DiscordClient
                         {
                             if (!list.Any(x => x.Id == m.Id)) list.Add(m);
                         }
-                        if (m.AuthorId != Me.Id && m.ChannelId != ActiveChannelId)
+                        if (m.AuthorId != Me.Id)
                         {
-                            UnreadChannels.AddOrUpdate(m.ChannelId, 1, (_, c) => c + 1);
-                            SoundFx.Play(UiSound.Message);
+                            bool unfocused = App.IsHiddenToTray || W.GetForegroundWindow() != App.Hwnd;
+                            if (m.ChannelId != ActiveChannelId)
+                                UnreadChannels.AddOrUpdate(m.ChannelId, 1, (_, c) => c + 1);
+                            if (m.ChannelId != ActiveChannelId || unfocused)
+                                SoundFx.Play(UiSound.Message);
+                            if (unfocused && App.Hwnd != 0)
+                                App.InvokeOnUiThread(() => W.FlashWindow(App.Hwnd, true));
                         }
                         Notify();
                     }
@@ -913,6 +923,7 @@ public sealed class DiscordClient
                                 int idx = list.FindIndex(x => x.Id == m.Id);
                                 if (idx >= 0) list[idx] = m;
                             }
+                            RefreshPinnedCache(m.ChannelId);
                             Notify();
                         }
                     }
@@ -1335,6 +1346,7 @@ public sealed class DiscordClient
             Timestamp = m.TryGetProperty("timestamp", out var ts) ? ts.GetString() ?? "" : "",
             DateLabel = m.TryGetProperty("date_label", out var dl) ? dl.GetString() ?? "" : "",
             IsEdited = m.TryGetProperty("edited", out var ed) && ed.ValueKind == JsonValueKind.True,
+            IsPinned = m.TryGetProperty("pinned", out var pn) && pn.ValueKind == JsonValueKind.True,
             MsgType = hasReply && rawType == 0 ? 19 : rawType,
             ReplyPreview = hasReply ? $"↪ {ra}: {rt}" : ""
         };
@@ -1700,6 +1712,9 @@ public sealed class DiscordClient
     {
         vol = Math.Clamp(vol, 0f, 2f);
         _userVolumes[userId] = vol;
+        SettingsStore.Current.UserVolumes ??= new();
+        SettingsStore.Current.UserVolumes[userId] = vol;
+        SettingsStore.Save();
         if (_userToSsrc.TryGetValue(userId, out var ssrc) && ssrc != 0)
             MediaNative.fc_voice_set_user_volume(ssrc, vol);
     }
@@ -1914,11 +1929,69 @@ public sealed class DiscordClient
 
     public Task LoadOlderMessagesAsync(string channelId) => Task.CompletedTask;
 
+    private void RefreshPinnedCache(string channelId)
+    {
+        if (Messages.TryGetValue(channelId, out var list))
+        {
+            List<DiscordMessage> pins;
+            lock (list) pins = list.Where(x => x.IsPinned).Reverse().ToList();
+            PinnedMessages[channelId] = pins;
+        }
+        else
+        {
+            PinnedMessages.TryAdd(channelId, []);
+        }
+    }
+
     public Task LoadPinnedMessagesAsync(string channelId)
     {
-        PinnedMessages.TryAdd(channelId, []);
+        RefreshPinnedCache(channelId);
         Notify();
         return Task.CompletedTask;
+    }
+
+    public Task PinMessageAsync(string channelId, string messageId)
+        => SendRpcAsync(w =>
+        {
+            w.WriteString("op", "pin_msg");
+            w.WriteString("channel_id", channelId);
+            w.WriteString("message_id", messageId);
+        });
+
+    public Task CreateChannelAsync(string name, bool isVoice)
+        => SendRpcAsync(w =>
+        {
+            w.WriteString("op", "create_channel");
+            w.WriteString("name", name.Trim());
+            w.WriteNumber("type", isVoice ? 2 : 0);
+        });
+
+    public async Task OpenP2pFileLocallyAsync(string url, string? suggestedFilename = null)
+    {
+        if (string.IsNullOrEmpty(url)) return;
+        if (!url.StartsWith("fluxp2p://", StringComparison.OrdinalIgnoreCase))
+        {
+            W.OpenUrl(url);
+            return;
+        }
+        try
+        {
+            var data = await FetchP2pAttachmentAsync(url);
+            if (data == null || data.Length == 0)
+            {
+                App.InvokeOnUiThread(() => Shell.Toast("Не удалось скачать файл с Jetson", 3000));
+                return;
+            }
+            string dlDir = Path.Combine(Path.GetTempPath(), "FluxCordP2P_Downloads");
+            Directory.CreateDirectory(dlDir);
+            string name = Path.GetFileName(string.IsNullOrWhiteSpace(suggestedFilename) ? url : suggestedFilename);
+            foreach (char bad in Path.GetInvalidFileNameChars()) name = name.Replace(bad, '_');
+            if (string.IsNullOrWhiteSpace(name)) name = "file.bin";
+            string dst = Path.Combine(dlDir, name);
+            await File.WriteAllBytesAsync(dst, data);
+            W.OpenLocalFile(dst);
+        }
+        catch { }
     }
 
     public async Task<bool> SendMessageAsync(string channelId, string content, string? replyToId = null)

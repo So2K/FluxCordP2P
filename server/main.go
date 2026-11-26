@@ -1049,6 +1049,26 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 			h.broadcastAll(map[string]interface{}{"op": "msg_delete", "channel_id": cid, "message_id": mid})
 		}
 
+	case "pin_msg":
+		cid, _ := req["channel_id"].(string)
+		mid, _ := req["message_id"].(string)
+		var updated *MessageDto
+		h.mu.Lock()
+		list := h.state.Messages[cid]
+		for i := range list {
+			if list[i].Id == mid {
+				list[i].Pinned = !list[i].Pinned
+				cp := list[i]
+				updated = &cp
+				break
+			}
+		}
+		h.mu.Unlock()
+		if updated != nil {
+			h.markDirty()
+			h.broadcastAll(map[string]interface{}{"op": "msg_update", "message": updated})
+		}
+
 	case "react_msg":
 		cid, _ := req["channel_id"].(string)
 		mid, _ := req["message_id"].(string)

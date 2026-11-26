@@ -23,6 +23,22 @@ public static unsafe class App
     public static bool DemoArg { get; private set; }
     public static bool BenchArg { get; private set; }
     public static bool ResumedUpdateArg { get; private set; }
+    public static bool MinimizedArg { get; private set; }
+
+    private const int HotkeyMuteId = 101;
+    private const int HotkeyDeafenId = 102;
+
+    public static void SyncGlobalHotkeys()
+    {
+        if (Hwnd == 0 || BenchArg) return;
+        W.UnregisterHotKey(Hwnd, HotkeyMuteId);
+        W.UnregisterHotKey(Hwnd, HotkeyDeafenId);
+        if (SettingsStore.Current.GlobalHotkeys)
+        {
+            W.RegisterHotKey(Hwnd, HotkeyMuteId, W.MOD_CONTROL | W.MOD_SHIFT | W.MOD_NOREPEAT, (uint)W.VK_M);
+            W.RegisterHotKey(Hwnd, HotkeyDeafenId, W.MOD_CONTROL | W.MOD_SHIFT | W.MOD_NOREPEAT, (uint)W.VK_D);
+        }
+    }
 
     private static nint _chatEdit, _tokenEdit, _searchEdit, _editFont, _editBrush, _blackBrush;
     private static nint _origChatProc, _origTokenProc, _origSearchProc;
@@ -77,6 +93,7 @@ public static unsafe class App
         DemoArg = args.Contains("--demo");
         BenchArg = args.Contains("--bench");
         ResumedUpdateArg = args.Contains("--resumed-update");
+        MinimizedArg = args.Contains("--minimized");
         SettingsStore.Load();
         Updater.InitOnStartup(ResumedUpdateArg);
 
@@ -329,6 +346,8 @@ public static unsafe class App
                 W.KillTimer(Hwnd, 1);
                 W.KillTimer(Hwnd, 2);
                 W.KillTimer(Hwnd, 99);
+                W.UnregisterHotKey(Hwnd, HotkeyMuteId);
+                W.UnregisterHotKey(Hwnd, HotkeyDeafenId);
                 SaveWindowBoundsIfNormal();
                 RemoveTrayIcon();
                 for (int i = 0; i < _trayStateIcons.Length; i++)
@@ -444,9 +463,18 @@ public static unsafe class App
         {
             BuildDynamicTrayIcons();
             AddOrUpdateTrayIcon(false);
+            SyncGlobalHotkeys();
         }
 
-        W.ShowWindow(Hwnd, W.SW_SHOWNORMAL);
+        if (MinimizedArg && !BenchArg)
+        {
+            _hiddenToTray = true;
+            W.ShowWindow(Hwnd, W.SW_HIDE);
+        }
+        else
+        {
+            W.ShowWindow(Hwnd, W.SW_SHOWNORMAL);
+        }
 
         // Fast 60ms background poll timer (drives real-time Tray Speaking indicator & voice rings even when minimized!)
         W.SetTimer(Hwnd, 2, 60, 0);
@@ -1076,6 +1104,10 @@ public static unsafe class App
                     mmi->minTrackSize.Y = (int)MathF.Round(560f * sc);
                     return 0;
                 }
+                case W.WM_HOTKEY:
+                    if ((int)w == HotkeyMuteId) { Shell.ToggleMute(); return 0; }
+                    if ((int)w == HotkeyDeafenId) { Shell.ToggleDeafen(); return 0; }
+                    return 0;
                 case W.WM_KEYDOWN when (int)w == W.VK_K && W.KeyDown(W.VK_CONTROL):
                     Shell.ToggleQuickSwitch();
                     return 0;

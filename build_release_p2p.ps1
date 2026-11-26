@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = 'C:\Users\User\Projects\FluxCordP2P'
-$ver = '2.1.0'
+$ver = '2.2.0'
 $vcvars = 'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat'
 
 Write-Host "[1/5] Publishing FluxCordP2P v$ver (NativeAOT Release win-x64)..." -ForegroundColor Cyan

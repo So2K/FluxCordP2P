@@ -106,7 +106,7 @@ static void registerUninstall(const std::wstring& installDir, const std::wstring
         RegSetValueExW(hKey, name, 0, REG_SZ, (const BYTE*)val.c_str(), DWORD((val.size() + 1) * sizeof(wchar_t)));
     };
     setSz(L"DisplayName", L"FluxCord P2P (Jetson Orin Edition)");
-    setSz(L"DisplayVersion", L"2.1.0");
+    setSz(L"DisplayVersion", L"2.2.0");
     setSz(L"Publisher", L"So2K / FluxCord");
     setSz(L"InstallLocation", installDir);
     setSz(L"DisplayIcon", exePath);

@@ -15,8 +15,9 @@ internal static unsafe partial class W
         WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_MOUSEWHEEL = 0x020A,
         WM_CAPTURECHANGED = 0x0215,
         WM_DROPFILES = 0x0233,
-        WM_MOUSELEAVE = 0x02A3, WM_DPICHANGED = 0x02E0, WM_APP = 0x8000,
+        WM_MOUSELEAVE = 0x02A3, WM_DPICHANGED = 0x02E0, WM_HOTKEY = 0x0312, WM_APP = 0x8000,
         WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084, WM_SETICON = 0x0080;
+    public const uint MOD_ALT = 0x0001, MOD_CONTROL = 0x0002, MOD_SHIFT = 0x0004, MOD_NOREPEAT = 0x4000;
     public const uint NIM_ADD = 0x00000000, NIM_MODIFY = 0x00000001, NIM_DELETE = 0x00000002,
         NIF_MESSAGE = 0x00000001, NIF_ICON = 0x00000002, NIF_TIP = 0x00000004;
     public const uint MF_STRING = 0x0000, MF_CHECKED = 0x0008, MF_SEPARATOR = 0x0800;
@@ -231,6 +232,46 @@ internal static unsafe partial class W
             if (SetClipboardData(13, mem) == 0) GlobalFree(mem); // prevent leak if SetClipboardData fails
         }
         finally { CloseClipboard(); }
+    }
+
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool UnregisterHotKey(nint hWnd, int id);
+    [LibraryImport("advapi32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegCreateKeyExW(nint hKey, string lpSubKey, uint reserved, string? lpClass, uint dwOptions, uint samDesired, nint lpSecurityAttributes, out nint phkResult, out uint lpdwDisposition);
+    [LibraryImport("advapi32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegSetValueExW(nint hKey, string lpValueName, uint reserved, uint dwType, char* lpData, uint cbData);
+    [LibraryImport("advapi32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegDeleteValueW(nint hKey, string lpValueName);
+    [LibraryImport("advapi32.dll")]
+    private static partial int RegCloseKey(nint hKey);
+
+    public static void SetWindowsAutostart(bool enable, bool startMinimized)
+    {
+        nint HKEY_CURRENT_USER = unchecked((nint)0x80000001);
+        const uint KEY_WRITE = 0x20006;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, @"Software\Microsoft\Windows\CurrentVersion\Run", 0, null, 0, KEY_WRITE, 0, out nint hKey, out _) != 0)
+            return;
+        try
+        {
+            if (enable)
+            {
+                string exe = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "FluxCordP2P.exe");
+                string val = startMinimized ? $"\"{exe}\" --minimized" : $"\"{exe}\"";
+                fixed (char* p = val)
+                    RegSetValueExW(hKey, "FluxCordP2P", 0, 1 /*REG_SZ*/, p, (uint)((val.Length + 1) * 2));
+            }
+            else
+            {
+                RegDeleteValueW(hKey, "FluxCordP2P");
+            }
+        }
+        finally { RegCloseKey(hKey); }
+    }
+
+    public static void OpenLocalFile(string path)
+    {
+        if (!string.IsNullOrEmpty(path) && File.Exists(path))
+            ShellExecuteW(0, "open", path, null, Path.GetDirectoryName(path), 5);
     }
 
     public static void OpenUrl(string url)

@@ -885,38 +885,50 @@ public static unsafe partial class Shell
             { CloseSettingsModal(); StartStream(-2, 0); }
             y += 48;
         }
-        else if (_settingsTab == 2) // Интерфейс, Турбо-сеть и миграция
+        else if (_settingsTab == 2) // Интерфейс, Windows и P2P Сеть
         {
-            Gfx.DrawText("⚡ ТУРБО-СЕТЬ И РЕГИОНЫ RTC (QOS DSCP EF46 + 1ms TIMER + 20ms JITTER)", new R(px, y, pw, 18), 11.5f, Th.Green, 700);
+            Gfx.DrawText("⚡ СЕТЬ JETSON ORIN NANO + DIRECT UDP P2P", new R(px, y, pw, 18), 11.5f, Th.Green, 700);
             y += 24;
-            string curReg = string.IsNullOrEmpty(s.PreferredRtcRegion)
-                ? $"Авто-быстрейший ({(string.IsNullOrEmpty(dc.BestRtcRegion) ? "замер..." : dc.BestRtcRegion)})"
-                : s.PreferredRtcRegion;
-            Gfx.DrawText($"Текущий сервер голоса: {(string.IsNullOrEmpty(dc.VoiceEndpointHost) ? "не подключён" : dc.VoiceEndpointHost)}  •  Предпочтительный: {curReg}", new R(px, y, pw, 18), 12f, Th.Text, 600);
+            string modeLbl = dc.BestRtcRegion == "jetson-relay" ? "🚀 Jetson Orin Relay" : "⚡ Auto Direct P2P + Jetson";
+            Gfx.DrawText($"Активный канал: {(string.IsNullOrEmpty(dc.VoiceEndpointHost) ? "ожидание голоса" : dc.VoiceEndpointHost)}  •  Режим: {modeLbl}", new R(px, y, pw, 18), 12f, Th.Text, 600);
             y += 24;
-            if (UI.Button(UI.Id("set_bench"), new R(px, y, 210, 32), dc.IsBenchmarkingRegions ? "Замер серверов..." : "⚡ Замерить и выбрать быстрейший", Th.Green, 0xFFFFFFFF, 6, 12))
-                _ = ShellAsync.AutoBestRegionAsync(forceBenchmark: true);
-            if (UI.Button(UI.Id("set_vinfo"), new R(px + 220, y, 220, 32), "Открыть список серверов RTC...", Th.Card, Th.Cyan, 6, 12))
-            { CloseSettingsModal(); _showVoiceInfo = true; _voiceInfoTab = 1; }
+            if (UI.Button(UI.Id("set_inv_cpy"), new R(px, y, 226, 32), "🔗 Копировать ссылку комнаты", Th.Brand, 0xFFFFFFFF, 6, 12, 600))
+                _ = ShellAsync.CreateAndCopyInviteAsync(dc.ActiveChannelId);
+            if (UI.Button(UI.Id("set_p2p_tog"), new R(px + 236, y, 224, 32), dc.BestRtcRegion == "jetson-relay" ? "⚡ Включить Direct P2P" : "🚀 Форсировать Jetson Relay", Th.Card, Th.Cyan, 6, 12))
+                _ = ShellAsync.SwitchRegionAsync(dc.BestRtcRegion == "jetson-relay" ? "p2p-auto" : "jetson-relay");
             y += 44;
 
             Gfx.FillRect(new R(px, y, pw, 1), Th.Border);
             y += 14;
-            Gfx.DrawText("ПЕРЕНЕСЁННЫЕ НАСТРОЙКИ (DORION / DISCORD)", new R(px, y, pw, 18), 12, Th.Cyan, 700);
+            Gfx.DrawText("WINDOWS, ГЛОБАЛЬНЫЕ ХОТКЕИ И МАСШТАБ", new R(px, y, pw, 18), 12, Th.Cyan, 700);
             y += 24;
-            Gfx.DrawText(SettingsStore.MigrationSummary, new R(px, y, pw, 20), 12.5f, Th.Green, 600);
-            y += 30;
-            if (UI.Toggle(UI.Id("tg_ptt"), new R(px, y, pw, 34), $"Push-to-Talk ({s.PushToTalkKey})", s.PushToTalk)) { s.PushToTalk = !s.PushToTalk; changed = true; }
-            y += 38;
-            if (UI.Toggle(UI.Id("tg_tray"), new R(px, y, pw, 34), "Сворачивать в фоновый трей при закрытии на крестик (✕)", s.CloseToTray)) { s.CloseToTray = !s.CloseToTray; changed = true; }
-            y += 38;
-            if (UI.Toggle(UI.Id("tg_not"), new R(px, y, pw, 34), "Уведомления рабочего стола", s.DesktopNotifications)) { s.DesktopNotifications = !s.DesktopNotifications; changed = true; }
-            y += 38;
-            if (UI.Toggle(UI.Id("tg_stm"), new R(px, y, pw, 34), "Режим стримера (скрывать личные данные)", s.StreamerMode)) { s.StreamerMode = !s.StreamerMode; changed = true; }
+
+            if (UI.Toggle(UI.Id("tg_ghk"), new R(px, y, pw, 32), "Глобальные хоткеи в играх (Ctrl+Shift+M — мик, Ctrl+Shift+D — дефен)", s.GlobalHotkeys))
+            { s.GlobalHotkeys = !s.GlobalHotkeys; changed = true; App.SyncGlobalHotkeys(); }
+            y += 36;
+            if (UI.Toggle(UI.Id("tg_winrun"), new R(px, y, pw, 32), "Запускать FluxCord P2P автоматически вместе с Windows", s.LaunchWithWindows))
+            { s.LaunchWithWindows = !s.LaunchWithWindows; changed = true; W.SetWindowsAutostart(s.LaunchWithWindows, s.StartMinimized); }
+            y += 36;
+            if (UI.Toggle(UI.Id("tg_startmin"), new R(px, y, pw, 32), "Запускать свёрнутым в трей (при старте Windows)", s.StartMinimized))
+            { s.StartMinimized = !s.StartMinimized; changed = true; if (s.LaunchWithWindows) W.SetWindowsAutostart(true, s.StartMinimized); }
+            y += 36;
+            if (UI.Toggle(UI.Id("tg_tray"), new R(px, y, pw, 32), "Сворачивать в фоновый трей при закрытии на крестик (✕)", s.CloseToTray)) { s.CloseToTray = !s.CloseToTray; changed = true; }
+            y += 36;
+            if (UI.Toggle(UI.Id("tg_ptt"), new R(px, y, pw, 32), $"Режим рации Push-to-Talk ({s.PushToTalkKey})", s.PushToTalk)) { s.PushToTalk = !s.PushToTalk; changed = true; }
+            y += 40;
+
+            float scalePct = s.UiScale * 100f;
+            if (UI.Slider(UI.Id("sl_uisc"), new R(px, y, pw, 38), "Масштаб интерфейса", ref scalePct, 80f, 140f, "%"))
+            {
+                s.UiScale = MathF.Round(scalePct / 5f) * 0.05f;
+                changed = true;
+                App.InvokeOnUiThread(Gfx.RefreshDpi);
+            }
             y += 48;
-            if (UI.Button(UI.Id("btn_remig"), new R(px, y, 310, 36), "Повторно импортировать из Dorion/Discord", Th.Card, Th.Text, 6, 12.5f))
-            { SettingsStore.MigrateFromExistingClients(); SettingsStore.Save(); Toast(SettingsStore.MigrationSummary); }
-            if (UI.Button(UI.Id("btn_quit_full"), new R(px + 320, y, 210, 36), "Полностью закрыть (Ctrl+Q)", 0x22ED4245, Th.Red, 6, 12f))
+
+            Gfx.DrawText("Быстрые команды в чате:  /nick Ник   •   /status Статус   •   /avatar   •   /channel Имя   •   /voice Имя", new R(px, y, pw, 18), 11.5f, Th.Dim, 500);
+            y += 28;
+            if (UI.Button(UI.Id("btn_quit_full"), new R(px, y, 220, 36), "Полностью закрыть (Ctrl+Q)", 0x22ED4245, Th.Red, 6, 12f))
                 App.RequestExit();
             y += 46;
         }
@@ -1413,8 +1425,9 @@ public static unsafe partial class Shell
         }
 
         var bar = new R(r.X + (r.W - 320) * 0.5f, r.Bottom - 54, 320, 34);
-        if (UI.Button(UI.Id("lb_open"), new R(bar.X, bar.Y, 150, 32), "Открыть в браузере", Th.Card, Th.Cyan, 6, 12))
-            W.OpenUrl(_lightboxUrl);
+        string openLbl = _lightboxUrl.StartsWith("fluxp2p://", StringComparison.OrdinalIgnoreCase) ? "Открыть оригинал" : "Открыть в браузере";
+        if (UI.Button(UI.Id("lb_open"), new R(bar.X, bar.Y, 150, 32), openLbl, Th.Card, Th.Cyan, 6, 12))
+            _ = DiscordClient.Instance.OpenP2pFileLocallyAsync(_lightboxUrl);
         if (UI.Button(UI.Id("lb_cpy"), new R(bar.X + 158, bar.Y, 110, 32), "Копир. URL", Th.Card, Th.Text, 6, 12))
         { W.CopyText(App.Hwnd, _lightboxUrl); Toast("Ссылка скопирована"); }
         if (UI.Button(UI.Id("lb_cls"), new R(bar.X + 276, bar.Y, 44, 32), "✕", Th.Red, 0xFFFFFFFF, 6, 13))

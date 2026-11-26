@@ -185,6 +185,7 @@ public sealed class DiscordMessage
     public DiscordEmbed[] Embeds = [];
     public ReactionEntry[] Reactions = [];
     public bool IsEdited;
+    public bool IsPinned;
     public bool Pending;
 
     public bool IsSystemOrCall => MsgType != 0 && MsgType != 19 && MsgType != 20 && MsgType != 21;
