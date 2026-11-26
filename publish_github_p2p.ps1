@@ -35,9 +35,9 @@ $psi.UseShellExecute = $false
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $proc = [System.Diagnostics.Process]::Start($psi)
-$proc.StandardInput.WriteLine("protocol=https")
-$proc.StandardInput.WriteLine("host=github.com")
-$proc.StandardInput.WriteLine("")
+$inBytes = [System.Text.Encoding]::ASCII.GetBytes("protocol=https`nhost=github.com`n`n")
+$proc.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length)
+$proc.StandardInput.BaseStream.Flush()
 $proc.StandardInput.Close()
 $credRaw = $proc.StandardOutput.ReadToEnd()
 $proc.WaitForExit()
