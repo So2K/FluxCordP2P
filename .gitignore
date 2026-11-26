@@ -1,25 +1,11 @@
-# Build artifacts
-bin/
-!native/third_party/libdave/bin/
-!native/third_party/libdave/bin/libdave.dll
-obj/
 dist/
+native/build/
+installer/build/
+src/FluxCord/bin/
+src/FluxCord/obj/
 room.secret
 p2p_preset.json
-native/build/
-native/out/
-*.pdb
-*.old
-*.bak
-*.zip
 *.log
-*.tmp
-deploy_verify.cmd
-native/build_run.cmd
-
-# User secrets & caches
-settings.json
-cache.db*
-.vs/
-.vscode/
-.idea/
+*.bak
+*.old*
+verify_media_gpu.py

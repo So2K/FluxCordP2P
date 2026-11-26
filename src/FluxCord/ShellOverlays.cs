@@ -658,15 +658,26 @@ public static unsafe partial class Shell
         Gfx.FillRect(new R(box.X + navW, box.Y, 1, box.H), Th.Border);
 
         var dc = DiscordClient.Instance;
-        string? myAvUrl = string.IsNullOrEmpty(dc.Me.Avatar) ? null : $"https://cdn.discordapp.com/avatars/{dc.Me.Id}/{dc.Me.Avatar}.png?size=64";
-        var myAv = ImageCache.Get(myAvUrl, 64, ImgMask.Circle);
+        var myAv = ImageCache.Get(dc.Me.AvatarUrl, 64, ImgMask.Circle);
         var avR = new R(box.X + 16, box.Y + 18, 34, 34);
         if (myAv != null) Gfx.DrawBitmap(myAv, avR);
-        else Gfx.FillCircle(avR.X + 17, avR.Y + 17, 17, Th.Brand);
+        else
+        {
+            Gfx.FillCircle(avR.X + 17, avR.Y + 17, 17, Th.Brand);
+            Gfx.DrawText(FirstGrapheme(dc.Me.DisplayName), new R(avR.X, avR.Y + 7, 34, 20), 13.5f, 0xFFFFFFFF, 700, 1);
+        }
         Gfx.DrawText(dc.Me.DisplayName, new R(avR.Right + 10, box.Y + 18, navW - 68, 18), 13, Th.Text, 700);
         Gfx.DrawText("Настройки FluxCord", new R(avR.Right + 10, box.Y + 36, navW - 68, 16), 11, Th.Dim);
 
-        Gfx.DrawText("ВЗАИМОДЕЙСТВИЕ", new R(box.X + 16, box.Y + 72, navW - 32, 16), 10.5f, Th.Dim, 700);
+        if (UI.Button(UI.Id("set_av_pick"), new R(box.X + 12, box.Y + 60, 92, 24), "🖼 Аватар", Th.Card, Th.Cyan, 5, 11f, 600))
+            PickAndUploadAvatar();
+        if (UI.Button(UI.Id("set_av_dc"), new R(box.X + 108, box.Y + 60, 92, 24), "🔄 Discord", Th.Card, Th.Text, 5, 11f, 600))
+        {
+            Toast("🔄 Подтягиваю аватар из Discord...");
+            _ = dc.TryImportFromDiscordAsync(silent: false);
+        }
+
+        Gfx.DrawText("ВЗАИМОДЕЙСТВИЕ", new R(box.X + 16, box.Y + 94, navW - 32, 16), 10.5f, Th.Dim, 700);
         (string Icon, string Label)[] tabs =
         [
             (IcMic, "Голос и видео"),
@@ -676,7 +687,7 @@ public static unsafe partial class Shell
         ];
         for (int i = 0; i < tabs.Length; i++)
         {
-            var tr = new R(box.X + 10, box.Y + 94 + i * 36, navW - 20, 32);
+            var tr = new R(box.X + 10, box.Y + 116 + i * 36, navW - 20, 32);
             bool sel = _settingsTab == i;
             if (sel) Gfx.FillRect(tr, Th.Active, 6);
             else if (UI.Hover(tr)) Gfx.FillRect(tr, Th.Hover, 6);
@@ -1218,7 +1229,7 @@ public static unsafe partial class Shell
     private static void DrawStatusPopup()
     {
         var dc = DiscordClient.Instance;
-        float w = 228, h = 246;
+        float w = 244, h = 352;
         var pop = new R(RailW + 8, Gfx.H - 68 - h, w, h);
         _overlayCutouts.Add(pop);
         if ((UI.Pressed || UI.RightClicked) && !pop.Contains(UI.MX, UI.MY))
@@ -1240,27 +1251,56 @@ public static unsafe partial class Shell
         for (int i = 0; i < sts.Length; i++)
         {
             bool sel = dc.Me.Status == sts[i].Key;
-            var rr = new R(pop.X + 8, y, pop.W - 16, 30);
+            var rr = new R(pop.X + 8, y, pop.W - 16, 28);
             if (sel) Gfx.FillRect(rr, Th.Active, 6);
             else if (UI.Hover(rr)) Gfx.FillRect(rr, Th.Hover, 6);
-            Gfx.FillCircle(rr.X + 14, rr.Y + 15, 5, sts[i].Dot);
-            Gfx.DrawText(sts[i].Label, new R(rr.X + 28, rr.Y + 7, rr.W - 34, 16), 12.5f, Th.Text, sel ? 700 : 500);
+            Gfx.FillCircle(rr.X + 14, rr.Y + 14, 5, sts[i].Dot);
+            Gfx.DrawText(sts[i].Label, new R(rr.X + 28, rr.Y + 6, rr.W - 34, 16), 12.5f, Th.Text, sel ? 700 : 500);
             if (UI.Click(UI.Id("st_opt", i), rr))
             {
                 _ = dc.SetPresenceStatusAsync(sts[i].Key);
                 _showStatusMenu = false;
                 return;
             }
-            y += 32;
+            y += 30;
         }
-        Gfx.FillRect(new R(pop.X + 10, y + 2, pop.W - 20, 1), Th.Border);
-        if (UI.Button(UI.Id("st_logout"), new R(pop.X + 8, y + 8, pop.W - 16, 28), "Выйти из аккаунта", Th.Card, Th.Sub, 6, 12))
+
+        Gfx.FillRect(new R(pop.X + 10, y + 3, pop.W - 20, 1), Th.Border);
+        y += 9;
+        if (UI.Button(UI.Id("st_av_pick"), new R(pop.X + 8, y, pop.W - 16, 28), "🖼 Сменить аватарку (файл)", Th.Brand, 0xFFFFFFFF, 6, 12f, 600))
+        {
+            _showStatusMenu = false;
+            PickAndUploadAvatar();
+            return;
+        }
+        y += 33;
+        if (UI.Button(UI.Id("st_av_dc"), new R(pop.X + 8, y, pop.W - 16, 28), "🔄 Подтянуть аватар из Discord", Th.Card, Th.Cyan, 6, 12f, 600))
+        {
+            _showStatusMenu = false;
+            Toast("🔄 Подтягиваю аватар из Discord...");
+            _ = dc.TryImportFromDiscordAsync(silent: false);
+            return;
+        }
+        y += 33;
+        if (UI.Button(UI.Id("st_nick"), new R(pop.X + 8, y, pop.W - 16, 28), "✏ Сменить ник (/nick)", Th.Card, Th.Text, 6, 12f, 600))
+        {
+            _showStatusMenu = false;
+            _inVoiceStage = false;
+            _showFriendsView = false;
+            App.SetChatInputText("/nick " + dc.Me.DisplayName);
+            Toast("Введите новый ник в поле чата и нажмите Enter");
+            return;
+        }
+        y += 35;
+
+        Gfx.FillRect(new R(pop.X + 10, y, pop.W - 20, 1), Th.Border);
+        if (UI.Button(UI.Id("st_logout"), new R(pop.X + 8, y + 6, pop.W - 16, 28), "Выйти из комнаты", Th.Card, Th.Sub, 6, 12))
         {
             _showStatusMenu = false;
             dc.Logout();
             return;
         }
-        if (UI.Button(UI.Id("st_quit"), new R(pop.X + 8, y + 40, pop.W - 16, 28), "Полностью закрыть (Ctrl+Q)", 0x22ED4245, Th.Red, 6, 12))
+        if (UI.Button(UI.Id("st_quit"), new R(pop.X + 8, y + 38, pop.W - 16, 28), "Полностью закрыть (Ctrl+Q)", 0x22ED4245, Th.Red, 6, 12))
         {
             _showStatusMenu = false;
             App.RequestExit();
@@ -1395,7 +1435,7 @@ public static unsafe partial class Shell
         string nick = !string.IsNullOrEmpty(_profileGuildId) && dc.GuildNicks.TryGetValue(_profileGuildId + ":" + uid, out var nk) ? nk : "";
         string display = !string.IsNullOrEmpty(nick) ? nick : (user?.DisplayName ?? (uid == dc.Me.Id ? dc.Me.DisplayName : "Пользователь"));
         string uname = user?.Username ?? (uid == dc.Me.Id ? dc.Me.Username : uid);
-        string? avUrl = user?.AvatarUrl ?? (uid == dc.Me.Id && !string.IsNullOrEmpty(dc.Me.Avatar) ? $"https://cdn.discordapp.com/avatars/{dc.Me.Id}/{dc.Me.Avatar}.png?size=128" : null);
+        string? avUrl = user?.AvatarUrl ?? (uid == dc.Me.Id ? dc.Me.AvatarUrl : null);
         string status = uid == dc.Me.Id ? dc.Me.Status : (user?.Status ?? "offline");
 
         bool inVoice = false;

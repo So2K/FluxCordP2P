@@ -42,9 +42,13 @@ public static unsafe class Gfx
     public static float H => PxH / Scale;
     public static R Clip { get; private set; }
     public static double LastFlushMs { get; private set; }
+    public static bool IsLiveResizing;
 
     private static readonly Stack<R> _clipStack = new();
     private static int _nativeClipDepth;
+    private static bool _inBeginDraw;
+    private static int _deferredResizeW, _deferredResizeH;
+    private static bool _deferredRefreshDpi;
     private static readonly Dictionary<(float Size, int Weight, int Align, bool Wrap), IDWriteTextFormat> _formats = new();
     private static readonly Dictionary<(string Text, float Size, int Weight, float MaxW), (IDWriteTextLayout Layout, float W, float H)> _layouts = new();
     private static IDWriteFontCollection? _lucideFonts;
@@ -81,7 +85,8 @@ public static unsafe class Gfx
                 [Vortice.Direct3D.FeatureLevel.Level_11_0], out dev).CheckError();
 
         _dev = dev!;
-        using var dxgiDev = _dev.QueryInterface<IDXGIDevice>();
+        using var dxgiDev = _dev.QueryInterface<IDXGIDevice1>();
+        dxgiDev.MaximumFrameLatency = 1;
         using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory2>();
 
         FluxCord.W.RECT rc;
@@ -114,6 +119,7 @@ public static unsafe class Gfx
     public static void RefreshDpi()
     {
         if (_swap == null || DC == null) return;
+        if (_inBeginDraw) { _deferredRefreshDpi = true; return; }
         CreateTarget();
     }
 
@@ -136,6 +142,12 @@ public static unsafe class Gfx
     public static void Resize(int w, int h)
     {
         if (w <= 0 || h <= 0 || _swap == null || DC == null) return;
+        if (_inBeginDraw)
+        {
+            _deferredResizeW = w;
+            _deferredResizeH = h;
+            return;
+        }
         PxW = w;
         PxH = h;
         DC.Target = null;
@@ -154,6 +166,7 @@ public static unsafe class Gfx
     {
         _clipStack.Clear();
         _nativeClipDepth = 0;
+        _inBeginDraw = true;
         DC.BeginDraw();
         DC.Clear(ToColor4(clearArgb));
         Clip = new R(0, 0, W, H);
@@ -186,14 +199,15 @@ public static unsafe class Gfx
 
     public static void EndDraw()
     {
-        if (DC == null || _swap == null) return;
+        if (DC == null || _swap == null) { _inBeginDraw = false; return; }
         UnwindClips();
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var hr = DC.EndDraw();
+        _inBeginDraw = false;
         LastFlushMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         if (hr.Success)
         {
-            var phr = _swap.Present(1, PresentFlags.None);
+            var phr = _swap.Present(IsLiveResizing ? 0u : 1u, PresentFlags.None);
             if (phr.Code == unchecked((int)0x887A0005) || phr.Code == unchecked((int)0x887A0007)) // DXGI_ERROR_DEVICE_REMOVED / RESET
             {
                 RecoverDevice();
@@ -204,6 +218,18 @@ public static unsafe class Gfx
             // Recover cleanly on ANY D2D EndDraw failure (D2DERR_RECREATE_TARGET, D2DERR_WRONG_STATE, etc.)
             SettingsStore.Log($"Gfx EndDraw hr=0x{hr.Code:X8} -> recreating device");
             RecoverDevice();
+        }
+        if (_deferredResizeW > 0 && _deferredResizeH > 0)
+        {
+            int rw = _deferredResizeW, rh = _deferredResizeH;
+            _deferredResizeW = _deferredResizeH = 0;
+            _deferredRefreshDpi = false;
+            Resize(rw, rh);
+        }
+        else if (_deferredRefreshDpi)
+        {
+            _deferredRefreshDpi = false;
+            RefreshDpi();
         }
         if (_layouts.Count > 1200)
         {

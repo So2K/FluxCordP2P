@@ -93,7 +93,10 @@ void VoiceTransport::daveSetVideoSsrc(uint32_t video_ssrc) {
     }
     std::lock_guard lk(dave_mtx_);
     video_ssrc_ = video_ssrc;
-    if (!dave_enc_) dave_enc_ = daveEncryptorCreate();
+    if (!dave_enc_) {
+        dave_enc_ = daveEncryptorCreate();
+        if (dave_enc_ && dave_proto_ver_ == 0) daveEncryptorSetPassthroughMode(dave_enc_, true);
+    }
     if (dave_enc_) daveEncryptorAssignSsrcToCodec(dave_enc_, video_ssrc, DAVE_CODEC_H264);
 }
 
@@ -510,7 +513,7 @@ bool VoiceTransport::sendOpus(const uint8_t* opus, int len, uint32_t timestamp) 
     // Apply DAVE E2EE media encryption when active (silence frame 0xF8,0xFF,0xFE stays unencrypted per spec)
     if (!isSilenceFrame(opus, len)) {
         std::lock_guard lk(dave_mtx_);
-        if (dave_enc_ && !daveEncryptorIsPassthroughMode(dave_enc_)) {
+        if (dave_enc_ && dave_proto_ver_ > 0 && !daveEncryptorIsPassthroughMode(dave_enc_)) {
             if (!daveEncryptorHasKeyRatchet(dave_enc_)) return false; // NEVER leak plaintext when DAVE is mandated!
             size_t maxOut = daveEncryptorGetMaxCiphertextByteSize(dave_enc_, DAVE_MEDIA_TYPE_AUDIO, size_t(len));
             daveBuf.resize(std::max(maxOut, size_t(len) + 64));
@@ -644,7 +647,7 @@ bool VoiceTransport::sendH264AccessUnit(const uint8_t* annexb, int len, uint32_t
     std::vector<uint8_t> daveBuf;
     {
         std::lock_guard lk(dave_mtx_);
-        if (dave_enc_ && !daveEncryptorIsPassthroughMode(dave_enc_)) {
+        if (dave_enc_ && dave_proto_ver_ > 0 && !daveEncryptorIsPassthroughMode(dave_enc_)) {
             if (!daveEncryptorHasKeyRatchet(dave_enc_)) return false;
             size_t maxOut = daveEncryptorGetMaxCiphertextByteSize(dave_enc_, DAVE_MEDIA_TYPE_VIDEO, size_t(rawLen));
             daveBuf.resize(std::max(maxOut, size_t(rawLen) + 256));

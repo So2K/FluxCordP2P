@@ -8,6 +8,7 @@ internal static unsafe partial class W
         WM_PAINT = 0x000F, WM_CLOSE = 0x0010, WM_QUERYENDSESSION = 0x0011, WM_ERASEBKGND = 0x0014,
         WM_ENDSESSION = 0x0016, WM_SETCURSOR = 0x0020,
         WM_GETMINMAXINFO = 0x0024, WM_SETFONT = 0x0030, WM_CONTEXTMENU = 0x007B,
+        WM_SIZING = 0x0214, WM_ENTERSIZEMOVE = 0x0231, WM_EXITSIZEMOVE = 0x0232,
         WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101,
         WM_CHAR = 0x0102, WM_COMMAND = 0x0111, WM_TIMER = 0x0113, WM_CTLCOLOREDIT = 0x0133,
         WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_LBUTTONDBLCLK = 0x0203,
@@ -158,7 +159,10 @@ internal static unsafe partial class W
     [LibraryImport("gdi32.dll")] public static partial int CombineRgn(nint dst, nint src1, nint src2, int mode);
     [LibraryImport("user32.dll")] public static partial int SetWindowRgn(nint h, nint rgn, [MarshalAs(UnmanagedType.Bool)] bool redraw);
 
+    [StructLayout(LayoutKind.Sequential)] public struct MARGINS { public int L, R, T, B; }
+
     [LibraryImport("dwmapi.dll")] public static partial int DwmSetWindowAttribute(nint h, uint attr, void* value, uint size);
+    [LibraryImport("dwmapi.dll")] public static partial int DwmExtendFrameIntoClientArea(nint h, MARGINS* margins);
     [LibraryImport("uxtheme.dll", EntryPoint = "#135")] public static partial int SetPreferredAppMode(int mode);
 
     [LibraryImport("crypt32.dll")]
@@ -336,11 +340,71 @@ internal static unsafe partial class W
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetOpenFileNameW(OPENFILENAMEW* ofn);
 
-    public static string? PickFile(nint owner)
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ICONINFO
+    {
+        public int fIcon;
+        public uint xHotspot, yHotspot;
+        public nint hbmMask, hbmColor;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BITMAPV5HEADER
+    {
+        public uint bV5Size;
+        public int bV5Width, bV5Height;
+        public ushort bV5Planes, bV5BitCount;
+        public uint bV5Compression, bV5SizeImage;
+        public int bV5XPelsPerMeter, bV5YPelsPerMeter;
+        public uint bV5ClrUsed, bV5ClrImportant;
+        public uint bV5RedMask, bV5GreenMask, bV5BlueMask, bV5AlphaMask;
+        public uint bV5CSType;
+        public fixed int bV5Endpoints[9];
+        public uint bV5GammaRed, bV5GammaGreen, bV5GammaBlue;
+        public uint bV5Intent, bV5ProfileData, bV5ProfileSize, bV5Reserved;
+    }
+
+    [LibraryImport("user32.dll")] public static partial nint CreateIconIndirect(ICONINFO* piconinfo);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool DestroyIcon(nint hIcon);
+    [LibraryImport("gdi32.dll")] public static partial nint CreateDIBSection(nint hdc, BITMAPV5HEADER* pbmi, uint usage, void** ppvBits, nint hSection, uint offset);
+    [LibraryImport("gdi32.dll")] public static partial nint CreateBitmap(int nWidth, int nHeight, uint nPlanes, uint nBitCount, nint lpBits);
+
+    public static nint CreateHIconFromBgra(byte[] bgra, int size)
+    {
+        if (bgra.Length < size * size * 4) return 0;
+        var bi = new BITMAPV5HEADER
+        {
+            bV5Size = (uint)sizeof(BITMAPV5HEADER),
+            bV5Width = size,
+            bV5Height = -size, // top-down
+            bV5Planes = 1,
+            bV5BitCount = 32,
+            bV5Compression = 3, // BI_BITFIELDS
+            bV5RedMask = 0x00FF0000,
+            bV5GreenMask = 0x0000FF00,
+            bV5BlueMask = 0x000000FF,
+            bV5AlphaMask = 0xFF000000
+        };
+        void* bits = null;
+        nint hColor = CreateDIBSection(0, &bi, 0, &bits, 0, 0);
+        if (hColor == 0 || bits == null) return 0;
+        fixed (byte* src = bgra) Buffer.MemoryCopy(src, bits, size * size * 4, size * size * 4);
+        nint hMask = CreateBitmap(size, size, 1, 1, 0);
+        var ii = new ICONINFO { fIcon = 1, hbmMask = hMask, hbmColor = hColor };
+        nint hIcon = CreateIconIndirect(&ii);
+        DeleteObject(hColor);
+        if (hMask != 0) DeleteObject(hMask);
+        return hIcon;
+    }
+
+    public static string? PickFile(nint owner, bool imagesOnly = false)
     {
         var buf = new char[1024];
+        string filter = imagesOnly
+            ? "Изображения (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)\0*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp\0Все файлы (*.*)\0*.*\0\0"
+            : "Все файлы (*.*)\0*.*\0Изображения (*.png;*.jpg;*.webp;*.gif)\0*.png;*.jpg;*.jpeg;*.webp;*.gif\0\0";
         fixed (char* pBuf = buf)
-        fixed (char* pFilter = "Все файлы (*.*)\0*.*\0Изображения (*.png;*.jpg;*.webp;*.gif)\0*.png;*.jpg;*.jpeg;*.webp;*.gif\0\0")
+        fixed (char* pFilter = filter)
         {
             var ofn = new OPENFILENAMEW
             {

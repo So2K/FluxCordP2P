@@ -57,6 +57,7 @@ target_link_libraries(FluxCord.Media PRIVATE
     ${SODIUM_LIB}
     ${DAVE_LIB}
     d3d11
+    d3dcompiler
     dxgi
     mfplat
     mf

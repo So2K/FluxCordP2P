@@ -396,6 +396,14 @@ public static unsafe partial class Shell
             dc.UpdateLocalSpeaking(dc.VoiceConnected && selfSpk, _localVoiceLevel);
             if (selfSpk != _prevLocalSpkPoll || selfSpk) { _prevLocalSpkPoll = selfSpk; needRedraw = true; }
 
+            // Dynamic Discord-style Windows System Tray Voice/Speaking/Mute/Deafen icon!
+            TrayVoiceState traySt = !dc.VoiceConnected ? TrayVoiceState.Idle
+                : _deafened ? TrayVoiceState.Deafened
+                : _muted ? TrayVoiceState.Muted
+                : selfSpk ? TrayVoiceState.Speaking
+                : TrayVoiceState.VoiceConnected;
+            App.UpdateTrayVoiceState(traySt);
+
             // Check if any peer speaking state changed (Guild Voice OR DM / Group DM Call!)
             int peerHash = 0;
             if (dc.VoiceConnected)
@@ -411,6 +419,7 @@ public static unsafe partial class Shell
             if (_loopback || _showSettings || _audioPopupMode != 0 || _showVoiceInfo) needRedraw = true;
             if (_streaming && _selfScreenStats.FramesEncoded == 0) needRedraw = true;
         }
+        if (!wantStats) App.UpdateTrayVoiceState(TrayVoiceState.Idle);
         if (!string.IsNullOrEmpty(_toast) && now >= _toastUntil) { _toast = ""; needRedraw = true; }
         return needRedraw;
     }
@@ -657,6 +666,36 @@ public static unsafe partial class Shell
         }
         if (preTakenText == null) App.TakeChatInputText();
 
+        // P2P Profile Slash Commands (/nick, /status, /avatar, /discord)
+        if (trimmed.StartsWith("/nick ", StringComparison.OrdinalIgnoreCase))
+        {
+            string nn = trimmed[6..].Trim();
+            if (!string.IsNullOrEmpty(nn))
+            {
+                _ = dc.SetProfileAsync(nn, null, null);
+                Toast($"✅ Никнейм изменён на «{nn}»");
+            }
+            return;
+        }
+        if (trimmed.StartsWith("/status ", StringComparison.OrdinalIgnoreCase))
+        {
+            string st = trimmed[8..].Trim();
+            _ = dc.SetProfileAsync(null, st, null);
+            Toast($"✅ Статус обновлён: {st}");
+            return;
+        }
+        if (string.Equals(trimmed, "/avatar", StringComparison.OrdinalIgnoreCase))
+        {
+            PickAndUploadAvatar();
+            return;
+        }
+        if (string.Equals(trimmed, "/discord", StringComparison.OrdinalIgnoreCase))
+        {
+            Toast("🔄 Подтягиваю аватар из Discord...");
+            _ = dc.TryImportFromDiscordAsync(silent: false);
+            return;
+        }
+
         if (!string.IsNullOrEmpty(_editingMsgId))
         {
             _ = dc.EditMessageAsync(dc.ActiveChannelId, _editingMsgId, trimmed);
@@ -689,6 +728,19 @@ public static unsafe partial class Shell
                 });
             }
         }, TaskScheduler.Default);
+    }
+
+    public static void PickAndUploadAvatar()
+    {
+        App.InvokeOnUiThread(() =>
+        {
+            string? path = W.PickFile(App.Hwnd, imagesOnly: true);
+            if (!string.IsNullOrEmpty(path))
+            {
+                Toast("⏳ Загрузка аватарки на Jetson...");
+                _ = DiscordClient.Instance.SetCustomAvatarFromFileAsync(path);
+            }
+        });
     }
 
     public static void OnTokenSubmit(string token)
@@ -873,9 +925,9 @@ public static unsafe partial class Shell
         TopBarRightZoneWidth = rightZone;
 
         if (UI.Button(UI.Id("win_min"), new R(bx, r.Y + 4, 40, 30), "—", 0x00000000, Th.Sub, 4))
-            W.ShowWindow(App.Hwnd, W.SW_MINIMIZE);
+            App.InvokeOnUiThread(() => W.ShowWindow(App.Hwnd, W.SW_MINIMIZE));
         if (UI.Button(UI.Id("win_max"), new R(bx + 44, r.Y + 4, 40, 30), "□", 0x00000000, Th.Sub, 4))
-            W.ShowWindow(App.Hwnd, W.IsZoomed(App.Hwnd) ? W.SW_SHOWNORMAL : W.SW_MAXIMIZE);
+            App.InvokeOnUiThread(() => W.ShowWindow(App.Hwnd, W.IsZoomed(App.Hwnd) ? W.SW_SHOWNORMAL : W.SW_MAXIMIZE));
         if (UI.Button(UI.Id("win_cls"), new R(bx + 88, r.Y + 4, 40, 30), "✕", 0x00000000, Th.Red, 4))
             W.PostMessageW(App.Hwnd, W.WM_CLOSE, 0, 0);
     }
@@ -1257,18 +1309,29 @@ public static unsafe partial class Shell
                         bool spk = dc.IsUserActuallySpeaking(vm);
                         float sa = isMe ? _localSpeakAnim : StepSpeakAnim(vm.UserId, spk);
                         bool isMuted = vm.SelfMute || (isMe && (_muted || _deafened));
-                        // Exact original-Discord crisp green speaking ring tightly around avatar (matches c_070.jpg!)
+                        // Crisp glowing Discord neon-green speaking ring + animated equalizer + bright green name!
                         if (sa > 0.04f)
                         {
                             float cx = vavr.X + 10f, cy = vavr.Y + 10f;
-                            Gfx.FillCircle(cx, cy, 12.1f, Gfx.Fade(0xFF23A55A, sa));
+                            Gfx.FillCircle(cx, cy, 13.4f, Gfx.Fade(0xFF23F56E, 0.35f * sa));
+                            Gfx.FillCircle(cx, cy, 12.2f, Gfx.Fade(0xFF23F56E, sa));
                             Gfx.FillCircle(cx, cy, 10.3f, Th.Sidebar);
                         }
                         if (vav != null) Gfx.DrawBitmap(vav, vavr);
-                        else Gfx.FillCircle(vavr.X + 10, vavr.Y + 10, 10, Th.Brand);
+                        else
+                        {
+                            Gfx.FillCircle(vavr.X + 10, vavr.Y + 10, 10, Th.Brand);
+                            Gfx.DrawText(FirstGrapheme(vm.Username), new R(vavr.X, vavr.Y + 2, 20, 16), 10.5f, 0xFFFFFFFF, 700, 1);
+                        }
 
-                        float rightUsed = (vm.SelfStream ? 58f : 4f) + (isMuted ? 18f : 0f);
-                        Gfx.DrawText(vm.Username, new R(vr.X + 30, vr.Y + 5, MathF.Max(20f, vr.W - 34 - rightUsed), 18), 12.5f, sa > 0.15f ? Th.Text : Th.Sub, sa > 0.15f ? 600 : 500);
+                        float rightUsed = (vm.SelfStream ? 58f : 4f) + (isMuted ? 18f : 0f) + (sa > 0.10f ? 18f : 0f);
+                        float nameX = vr.X + 30;
+                        if (sa > 0.10f && !isMuted)
+                        {
+                            DrawVoiceBars(vr.X + 30, vr.Y + 13, 3, 10f, isMe ? MathF.Max(0.35f, _localVoiceLevel) : 0.78f, vm.UserId.GetHashCode() * 0.19f, 0xFF23F56E, sa);
+                            nameX += 15f;
+                        }
+                        Gfx.DrawText(vm.Username, new R(nameX, vr.Y + 5, MathF.Max(20f, vr.Right - nameX - rightUsed + (sa > 0.10f ? 16f : 0f)), 18), 12.5f, sa > 0.10f ? 0xFF4ADE80 : Th.Sub, sa > 0.10f ? 700 : 500);
 
                         if (isMuted)
                             Gfx.DrawIcon(IcMicOff, "M", new R(vr.Right - (vm.SelfStream ? 74 : 20), vr.Y + 5, 16, 16), 12, isMe ? Th.Red : Th.Dim);
@@ -1442,17 +1505,21 @@ public static unsafe partial class Shell
             _showVoiceInfo = false; _audioPopupMode = 0; _ctxUser = null; _ctxStreamUserId = null;
         }
 
-        string? myAvUrl = string.IsNullOrEmpty(dc.Me.Avatar) ? null : $"https://cdn.discordapp.com/avatars/{dc.Me.Id}/{dc.Me.Avatar}.png?size=64";
-        var myAv = ImageCache.Get(myAvUrl, 64, ImgMask.Circle);
+        var myAv = ImageCache.Get(dc.Me.AvatarUrl, 64, ImgMask.Circle);
         var myAvR = new R(r.X + 8, dy + 14, 32, 32);
         if (_localSpeakAnim > 0.04f)
         {
             float cx = myAvR.X + 16f, cy = myAvR.Y + 16f;
-            Gfx.FillCircle(cx, cy, 18.4f, Gfx.Fade(0xFF23A55A, _localSpeakAnim));
+            Gfx.FillCircle(cx, cy, 19.6f, Gfx.Fade(0xFF23F56E, 0.35f * _localSpeakAnim));
+            Gfx.FillCircle(cx, cy, 18.4f, Gfx.Fade(0xFF23F56E, _localSpeakAnim));
             Gfx.FillCircle(cx, cy, 16.4f, Th.Rail);
         }
         if (myAv != null) Gfx.DrawBitmap(myAv, myAvR);
-        else Gfx.FillCircle(myAvR.X + 16, myAvR.Y + 16, 16, Th.Brand);
+        else
+        {
+            Gfx.FillCircle(myAvR.X + 16, myAvR.Y + 16, 16, Th.Brand);
+            Gfx.DrawText(FirstGrapheme(dc.Me.DisplayName), new R(myAvR.X, myAvR.Y + 6, 32, 20), 13.5f, 0xFFFFFFFF, 700, 1);
+        }
         uint stDotCol = dc.Me.Status switch { "idle" => Th.Amber, "dnd" => Th.Red, "invisible" => Th.Dim, _ => Th.Green };
         Gfx.FillCircle(myAvR.Right - 4, myAvR.Bottom - 4, 5, Th.Rail);
         Gfx.FillCircle(myAvR.Right - 4, myAvR.Bottom - 4, 3.5f, stDotCol);
@@ -1638,6 +1705,41 @@ public static unsafe partial class Shell
                 Gfx.FillRect(svBtn, UI.Hover(svBtn) ? Th.Hover : Th.Card, 8);
                 Gfx.DrawIcon(focusedWs.Muted || focusedWs.Volume < 0.01f ? IcVolOff : IcVol, "V", svBtn, 16, focusedWs.Muted ? Th.Red : Th.Text);
                 if (UI.Click(UI.Id("vs_svol"), svBtn)) dc.ToggleStreamMute(focusedWs.StreamerUserId);
+            }
+
+            // Floating Discord-style Speaking HUD overlay on top of full-screen stream (punches exact cutout over video HWND!)
+            if (dc.VoiceConnected)
+            {
+                var spkVms = dc.GetVoiceMembersSnapshot(voiceScopeGuildId, dc.ConnectedVoiceChannelId);
+                float hudY = stageArea.Y + 14f;
+                foreach (var svm in spkVms)
+                {
+                    bool isMeS = svm.UserId == dc.Me.Id;
+                    bool spkS = dc.IsUserActuallySpeaking(svm);
+                    float saS = isMeS ? _localSpeakAnim : StepSpeakAnim(svm.UserId, spkS);
+                    if (saS <= 0.06f) continue;
+
+                    string lbl = svm.Username;
+                    float pw = MathF.Min(240f, Gfx.MeasureText(lbl, 12.5f, 700, 170f).W + 64f);
+                    var pillR = new R(stageArea.X + 14f, hudY, pw, 34f);
+                    _overlayCutouts.Add(pillR);
+                    Gfx.FillRect(pillR, 0xEC101218, 17f);
+                    Gfx.StrokeRect(pillR, Gfx.Fade(0xFF23F56E, saS), 1.8f, 17f);
+
+                    var savR = new R(pillR.X + 5f, pillR.Y + 5f, 24f, 24f);
+                    Gfx.FillCircle(savR.X + 12f, savR.Y + 12f, 13.5f, Gfx.Fade(0xFF23F56E, saS));
+                    var savBmp = ImageCache.Get(svm.AvatarUrl, 48, ImgMask.Circle);
+                    if (savBmp != null) Gfx.DrawBitmap(savBmp, savR);
+                    else
+                    {
+                        Gfx.FillCircle(savR.X + 12f, savR.Y + 12f, 12f, Th.Brand);
+                        Gfx.DrawText(FirstGrapheme(lbl), new R(savR.X, savR.Y + 4f, 24f, 16f), 11f, 0xFFFFFFFF, 700, 1);
+                    }
+                    DrawVoiceBars(savR.Right + 7f, pillR.Y + 17f, 3, 12f, isMeS ? MathF.Max(0.35f, _localVoiceLevel) : 0.8f, svm.UserId.GetHashCode() * 0.21f, 0xFF23F56E, saS);
+                    Gfx.DrawText(lbl, new R(savR.Right + 22f, pillR.Y + 8f, pillR.W - 58f, 18f), 12.5f, 0xFF4ADE80, 700);
+                    hudY += 40f;
+                    if (hudY > stageArea.Bottom - 60f) break;
+                }
             }
         }
         else if (guild != null || vdm != null || dc.ConnectedVoiceGuildId == "@me" || _streaming)
@@ -1921,7 +2023,7 @@ public static unsafe partial class Shell
         Gfx.FillRect(fsBtn, UI.Hover(fsBtn) ? Th.Hover : Th.Card, 8);
         Gfx.DrawIcon(W.IsZoomed(App.Hwnd) ? IcMin : IcMax, "⛶", fsBtn, 16, Th.Text);
         if (UI.Click(UI.Id("vs_fs"), fsBtn))
-            W.ShowWindow(App.Hwnd, W.IsZoomed(App.Hwnd) ? W.SW_SHOWNORMAL : W.SW_MAXIMIZE);
+            App.InvokeOnUiThread(() => W.ShowWindow(App.Hwnd, W.IsZoomed(App.Hwnd) ? W.SW_SHOWNORMAL : W.SW_MAXIMIZE));
     }
 
     // ---------------- Text Chat Stage (Search, Pins, Member List, Markdown Code Blocks, Lightbox, Reactions, Edit, Emoji) ----------------
@@ -2040,8 +2142,7 @@ public static unsafe partial class Shell
                     Gfx.FillCircle(cx, cy, avSz * 0.5f + 3f, Gfx.Fade(0xFF34D399, sa));
                     Gfx.FillCircle(cx, cy, avSz * 0.5f + 1f, 0xFF0C0D11);
                 }
-                string? avUrl = string.IsNullOrEmpty(vm.Avatar) ? null : $"https://cdn.discordapp.com/avatars/{vm.UserId}/{vm.Avatar}.png?size=128";
-                var avBmp = ImageCache.Get(avUrl, 128, ImgMask.Circle);
+                var avBmp = ImageCache.Get(vm.AvatarUrl, 128, ImgMask.Circle);
                 if (avBmp != null) Gfx.DrawBitmap(avBmp, avr);
                 else { Gfx.FillCircle(cx, cy, avSz * 0.5f, Th.Brand); Gfx.DrawText(FirstGrapheme(vm.Username), new R(avr.X, avr.Y + 18, avSz, 28), 22, 0xFFFFFFFF, 700, 1); }
 

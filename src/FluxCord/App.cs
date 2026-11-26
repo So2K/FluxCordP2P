@@ -4,6 +4,15 @@ using System.Runtime.InteropServices;
 
 namespace FluxCord;
 
+public enum TrayVoiceState
+{
+    Idle = 0,
+    VoiceConnected = 1,
+    Speaking = 2,
+    Muted = 3,
+    Deafened = 4
+}
+
 public static unsafe class App
 {
     public const int MaxWatchSlots = 4;
@@ -19,7 +28,11 @@ public static unsafe class App
     private static nint _origChatProc, _origTokenProc, _origSearchProc;
     private static bool _searchWasVisible;
     private static nint _arrow, _hand, _trayIcon;
+    private static readonly nint[] _trayStateIcons = new nint[5];
+    private static TrayVoiceState _currentTrayState = TrayVoiceState.Idle;
+    private static string _currentTrayTip = "FluxCord P2P • Jetson Orin";
     private static bool _wakePending, _tracking, _inRender, _shuttingDown, _releasingCapture;
+    private static int _lastMouseRawX = int.MinValue, _lastMouseRawY = int.MinValue;
     private static bool _trayAdded, _hiddenToTray, _wasZoomedBeforeHide, _forceExit;
     private static uint _wmTaskbarCreated, _wmActivateExisting;
     public const nuint ForceCloseWParam = 0xFC01;
@@ -90,9 +103,127 @@ public static unsafe class App
         }
     }
 
+    private static void BuildDynamicTrayIcons()
+    {
+        try
+        {
+            const int sz = 32;
+            string pngPath = Path.Combine(AppContext.BaseDirectory, "Assets", "fluxcord.png");
+            byte[]? basePx = ImageCache.DecodeLocalIconBgra(pngPath, sz);
+            if (basePx == null || basePx.Length != sz * sz * 4) return;
+
+            for (int st = 0; st < 5; st++)
+            {
+                byte[] buf = new byte[basePx.Length];
+                Buffer.BlockCopy(basePx, 0, buf, 0, buf.Length);
+
+                // Anti-aliased Discord-style ring & bottom-right status badge!
+                static void BlendPx(byte[] b, int x, int y, byte r, byte g, byte bl, float a)
+                {
+                    if ((uint)x >= sz || (uint)y >= sz || a <= 0.001f) return;
+                    int o = (y * sz + x) * 4;
+                    float da = b[o + 3] / 255f;
+                    float outA = a + da * (1f - a);
+                    if (outA <= 0.001f) return;
+                    b[o] = (byte)Math.Clamp((bl * a + b[o] * da * (1f - a)) / outA, 0, 255);
+                    b[o + 1] = (byte)Math.Clamp((g * a + b[o + 1] * da * (1f - a)) / outA, 0, 255);
+                    b[o + 2] = (byte)Math.Clamp((r * a + b[o + 2] * da * (1f - a)) / outA, 0, 255);
+                    b[o + 3] = (byte)Math.Clamp(outA * 255f, 0, 255);
+                }
+                static float Dist(float dx, float dy) => MathF.Sqrt(dx * dx + dy * dy);
+                static void DrawCircle(byte[] b, float cx, float cy, float rad, byte r, byte g, byte bl, float maxA = 1f)
+                {
+                    for (int y = 0; y < sz; y++)
+                        for (int x = 0; x < sz; x++)
+                        {
+                            float d = Dist(x + 0.5f - cx, y + 0.5f - cy) - rad;
+                            if (d < 0.7f) BlendPx(b, x, y, r, g, bl, Math.Clamp(0.7f - d, 0f, 1f) * maxA);
+                        }
+                }
+                static void DrawRing(byte[] b, float cx, float cy, float rOuter, float rInner, byte r, byte g, byte bl)
+                {
+                    for (int y = 0; y < sz; y++)
+                        for (int x = 0; x < sz; x++)
+                        {
+                            float dist = Dist(x + 0.5f - cx, y + 0.5f - cy);
+                            float aOut = Math.Clamp(rOuter + 0.6f - dist, 0f, 1f);
+                            float aIn = Math.Clamp(dist - (rInner - 0.6f), 0f, 1f);
+                            float a = aOut * aIn;
+                            if (a > 0.01f) BlendPx(b, x, y, r, g, bl, a);
+                        }
+                }
+                static void DrawSlash(byte[] b, float x0, float y0, float x1, float y1, float halfW, byte r, byte g, byte bl)
+                {
+                    float dx = x1 - x0, dy = y1 - y0;
+                    float len2 = dx * dx + dy * dy;
+                    for (int y = 0; y < sz; y++)
+                        for (int x = 0; x < sz; x++)
+                        {
+                            float t = Math.Clamp(((x + 0.5f - x0) * dx + (y + 0.5f - y0) * dy) / len2, 0f, 1f);
+                            float dist = Dist(x + 0.5f - (x0 + t * dx), y + 0.5f - (y0 + t * dy)) - halfW;
+                            if (dist < 0.6f) BlendPx(b, x, y, r, g, bl, Math.Clamp(0.6f - dist, 0f, 1f));
+                        }
+                }
+
+                if (st == (int)TrayVoiceState.Speaking)
+                {
+                    // Full glowing Discord neon-green ring around the entire tray icon + bright green voice dot!
+                    DrawRing(buf, 16f, 16f, 15.8f, 12.6f, 0x23, 0xF5, 0x6E);
+                    DrawCircle(buf, 24.5f, 24.5f, 7.2f, 0x10, 0x12, 0x18);
+                    DrawCircle(buf, 24.5f, 24.5f, 5.6f, 0x23, 0xF5, 0x6E);
+                    DrawCircle(buf, 24.5f, 24.5f, 2.2f, 0xFF, 0xFF, 0xFF);
+                }
+                else if (st == (int)TrayVoiceState.VoiceConnected)
+                {
+                    // Crisp Discord green voice-connected badge in bottom-right
+                    DrawCircle(buf, 24.5f, 24.5f, 6.8f, 0x10, 0x12, 0x18);
+                    DrawCircle(buf, 24.5f, 24.5f, 5.2f, 0x23, 0xA5, 0x5A);
+                }
+                else if (st == (int)TrayVoiceState.Muted)
+                {
+                    // Red muted badge with crisp white diagonal slash (exact Discord mute indicator!)
+                    DrawCircle(buf, 24.0f, 24.0f, 7.5f, 0x10, 0x12, 0x18);
+                    DrawCircle(buf, 24.0f, 24.0f, 6.0f, 0xED, 0x42, 0x45);
+                    DrawSlash(buf, 20.5f, 20.5f, 27.5f, 27.5f, 1.15f, 0xFF, 0xFF, 0xFF);
+                }
+                else if (st == (int)TrayVoiceState.Deafened)
+                {
+                    // Red outer ring + red deafened badge with crisp white X
+                    DrawRing(buf, 16f, 16f, 15.8f, 13.4f, 0xED, 0x42, 0x45);
+                    DrawCircle(buf, 24.0f, 24.0f, 7.5f, 0x10, 0x12, 0x18);
+                    DrawCircle(buf, 24.0f, 24.0f, 6.0f, 0xED, 0x42, 0x45);
+                    DrawSlash(buf, 20.5f, 20.5f, 27.5f, 27.5f, 1.1f, 0xFF, 0xFF, 0xFF);
+                    DrawSlash(buf, 27.5f, 20.5f, 20.5f, 27.5f, 1.1f, 0xFF, 0xFF, 0xFF);
+                }
+
+                _trayStateIcons[st] = W.CreateHIconFromBgra(buf, sz);
+            }
+        }
+        catch { }
+    }
+
+    public static void UpdateTrayVoiceState(TrayVoiceState state, string? tip = null)
+    {
+        if (Hwnd == 0 || _shuttingDown || BenchArg) return;
+        string wantTip = tip ?? state switch
+        {
+            TrayVoiceState.Speaking => "FluxCord P2P • Вы говорите 🎤",
+            TrayVoiceState.VoiceConnected => "FluxCord P2P • В голосовом канале",
+            TrayVoiceState.Muted => "FluxCord P2P • Микрофон выключен",
+            TrayVoiceState.Deafened => "FluxCord P2P • Звук и микрофон выключены",
+            _ => "FluxCord P2P • Jetson Orin"
+        };
+        if (state == _currentTrayState && wantTip == _currentTrayTip) return;
+        _currentTrayState = state;
+        _currentTrayTip = wantTip;
+        if (_trayAdded) AddOrUpdateTrayIcon(modify: true);
+    }
+
     private static void AddOrUpdateTrayIcon(bool modify = false)
     {
         if (Hwnd == 0 || _shuttingDown) return;
+        nint stateIcon = _trayStateIcons[(int)_currentTrayState];
+        nint useIcon = stateIcon != 0 ? stateIcon : (_trayIcon != 0 ? _trayIcon : W.LoadCursorW(0, 32512));
         var nid = new W.NOTIFYICONDATAW
         {
             cbSize = (uint)sizeof(W.NOTIFYICONDATAW),
@@ -100,9 +231,9 @@ public static unsafe class App
             uID = TrayIconId,
             uFlags = W.NIF_MESSAGE | W.NIF_ICON | W.NIF_TIP,
             uCallbackMessage = WM_TRAY,
-            hIcon = _trayIcon != 0 ? _trayIcon : W.LoadCursorW(0, 32512)
+            hIcon = useIcon
         };
-        const string tip = "FluxCord P2P • Jetson Orin";
+        string tip = _currentTrayTip;
         for (int i = 0; i < tip.Length && i < 127; i++) nid.szTip[i] = tip[i];
         nid.szTip[Math.Min(tip.Length, 127)] = '\0';
 
@@ -200,6 +331,10 @@ public static unsafe class App
                 W.KillTimer(Hwnd, 99);
                 SaveWindowBoundsIfNormal();
                 RemoveTrayIcon();
+                for (int i = 0; i < _trayStateIcons.Length; i++)
+                {
+                    if (_trayStateIcons[i] != 0) { W.DestroyIcon(_trayStateIcons[i]); _trayStateIcons[i] = 0; }
+                }
             }
         }
         catch { }
@@ -272,6 +407,12 @@ public static unsafe class App
 
         int dark = 1;
         W.DwmSetWindowAttribute(Hwnd, 20, &dark, 4);
+        int corner = 2; // DWMWCP_ROUND (native Windows 11 rounded corners & smooth Aero Snap)
+        W.DwmSetWindowAttribute(Hwnd, 33, &corner, 4);
+        uint border = W.Rgb(0x28, 0x2B, 0x36);
+        W.DwmSetWindowAttribute(Hwnd, 34, &border, 4);
+        var margins = new W.MARGINS { L = 0, R = 0, T = 0, B = 1 };
+        W.DwmExtendFrameIntoClientArea(Hwnd, &margins);
         if (iconBig != 0) W.SendMessageW(Hwnd, W.WM_SETICON, 1, iconBig);
         if (iconSm != 0) W.SendMessageW(Hwnd, W.WM_SETICON, 0, iconSm);
         W.DragAcceptFiles(Hwnd, true);
@@ -299,12 +440,16 @@ public static unsafe class App
         Gfx.Init(Hwnd);
         Shell.Init();
         RebuildEditFont();
-        if (!BenchArg) AddOrUpdateTrayIcon(false);
+        if (!BenchArg)
+        {
+            BuildDynamicTrayIcons();
+            AddOrUpdateTrayIcon(false);
+        }
 
         W.ShowWindow(Hwnd, W.SW_SHOWNORMAL);
 
-        // Low-overhead 100ms background poll timer (only wakes D2D when speaking/telemetry/clock actually changes -> <1% idle CPU!)
-        W.SetTimer(Hwnd, 2, 100, 0);
+        // Fast 60ms background poll timer (drives real-time Tray Speaking indicator & voice rings even when minimized!)
+        W.SetTimer(Hwnd, 2, 60, 0);
         if (BenchArg) W.SetTimer(Hwnd, 99, 2500, 0);
 
         W.MSG msg;
@@ -802,9 +947,26 @@ public static unsafe class App
                     Shell.OnFilesDropped(W.ReadDroppedFiles((nint)w));
                     return 0;
                 case W.WM_SIZE when !_shuttingDown && Gfx.DC != null:
+                    if ((int)w == 1 /*SIZE_MINIMIZED*/ || W.IsIconic(hwnd))
+                    {
+                        W.KillTimer(hwnd, 1);
+                        return 0;
+                    }
                     Gfx.Resize(W.LoWord(l), W.HiWord(l));
                     Render();
+                    W.ValidateRect(hwnd, null);
                     return 0;
+                case W.WM_SIZING:
+                    Gfx.IsLiveResizing = true;
+                    break;
+                case W.WM_ENTERSIZEMOVE:
+                    W.SetTimer(hwnd, 3, 16, 0);
+                    break;
+                case W.WM_EXITSIZEMOVE:
+                    W.KillTimer(hwnd, 3);
+                    Gfx.IsLiveResizing = false;
+                    Invalidate();
+                    break;
                 case W.WM_PAINT:
                     W.ValidateRect(hwnd, null);
                     if (Gfx.DC != null) Render();
@@ -846,20 +1008,26 @@ public static unsafe class App
                     return 0;
                 }
                 case W.WM_MOUSEMOVE:
+                {
+                    int rx = W.LoWord(l), ry = W.HiWord(l);
+                    if (rx == _lastMouseRawX && ry == _lastMouseRawY && _tracking) return 0;
+                    _lastMouseRawX = rx; _lastMouseRawY = ry;
                     if (!_tracking)
                     {
                         var tme = new W.TRACKMOUSEEVENT { cbSize = (uint)sizeof(W.TRACKMOUSEEVENT), dwFlags = 2, hwndTrack = hwnd };
                         W.TrackMouseEvent(&tme);
                         _tracking = true;
                     }
-                    UI.MX = W.LoWord(l) / Gfx.Scale;
-                    UI.MY = W.HiWord(l) / Gfx.Scale;
-                    Render();
+                    UI.MX = rx / Gfx.Scale;
+                    UI.MY = ry / Gfx.Scale;
+                    Invalidate();
                     return 0;
+                }
                 case W.WM_MOUSELEAVE:
                     _tracking = false;
+                    _lastMouseRawX = _lastMouseRawY = int.MinValue;
                     if (!UI.Down) UI.MX = UI.MY = -1;
-                    Render();
+                    Invalidate();
                     return 0;
                 case W.WM_LBUTTONDOWN:
                     W.SetCapture(hwnd);

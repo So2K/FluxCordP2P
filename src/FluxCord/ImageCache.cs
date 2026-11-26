@@ -247,6 +247,79 @@ public static partial class ImageCache
         finally { if (coHr >= 0) CoUninitialize(); }
     }
 
+    /// <summary>Center-crops and scales any image (PNG/JPG/WEBP/GIF/BMP) into a crisp square PNG avatar.</summary>
+    public static byte[]? EncodeAvatarPng(byte[] raw, int targetDim = 192)
+    {
+        int coHr = CoInitializeEx(0, 0);
+        try
+        {
+            using var fac = new IWICImagingFactory();
+            using var inStream = fac.CreateStream(raw);
+            using var decoder = fac.CreateDecoderFromStream(inStream, DecodeOptions.CacheOnLoad);
+            using var frame = decoder.GetFrame(0);
+            int sw = (int)frame.Size.Width, sh = (int)frame.Size.Height;
+            if (sw <= 0 || sh <= 0) return null;
+
+            int side = Math.Min(sw, sh);
+            int cx = (sw - side) / 2, cy = (sh - side) / 2;
+            IWICBitmapSource src = frame;
+            IWICBitmapClipper? clipper = null;
+            if (sw != sh)
+            {
+                clipper = fac.CreateBitmapClipper();
+                clipper.Initialize(frame, new Vortice.Mathematics.RectI(cx, cy, side, side));
+                src = clipper;
+            }
+            IWICBitmapScaler? scaler = null;
+            int outDim = Math.Min(targetDim, side);
+            if (outDim < 64) outDim = Math.Min(targetDim, 192);
+            if (side != outDim)
+            {
+                scaler = fac.CreateBitmapScaler();
+                scaler.Initialize(src, (uint)outDim, (uint)outDim, Vortice.WIC.BitmapInterpolationMode.Fant);
+                src = scaler;
+            }
+            using var ms = new MemoryStream();
+            using var outStream = fac.CreateStream(ms);
+            using var encoder = fac.CreateEncoder(ContainerFormat.Png);
+            encoder.Initialize(outStream, BitmapEncoderCacheOption.NoCache);
+            using var outFrame = encoder.CreateNewFrame(out _);
+            outFrame.Initialize();
+            outFrame.WriteSource(src);
+            outFrame.Commit();
+            encoder.Commit();
+            scaler?.Dispose();
+            clipper?.Dispose();
+            return ms.ToArray();
+        }
+        catch { return null; }
+        finally { if (coHr >= 0) CoUninitialize(); }
+    }
+
+    /// <summary>Decodes a local PNG into straight 32bpp BGRA pixels at exact size (for crisp dynamic Tray HICONs).</summary>
+    public static byte[]? DecodeLocalIconBgra(string filePath, int size = 32)
+    {
+        if (!File.Exists(filePath)) return null;
+        int coHr = CoInitializeEx(0, 0);
+        try
+        {
+            byte[] raw = File.ReadAllBytes(filePath);
+            using var fac = new IWICImagingFactory();
+            using var stream = fac.CreateStream(raw);
+            using var decoder = fac.CreateDecoderFromStream(stream, DecodeOptions.CacheOnLoad);
+            using var frame = decoder.GetFrame(0);
+            using var scaler = fac.CreateBitmapScaler();
+            scaler.Initialize(frame, (uint)size, (uint)size, Vortice.WIC.BitmapInterpolationMode.Fant);
+            using var conv = fac.CreateFormatConverter();
+            conv.Initialize(scaler, Vortice.WIC.PixelFormat.Format32bppBGRA, BitmapDitherType.None, null, 0, BitmapPaletteType.Custom);
+            byte[] pixels = new byte[size * size * 4];
+            conv.CopyPixels((uint)(size * 4), pixels);
+            return pixels;
+        }
+        catch { return null; }
+        finally { if (coHr >= 0) CoUninitialize(); }
+    }
+
     private static DecodedImg? DecodeWic(byte[] raw, int maxDim, ImgMask mask, string url)
     {
         int coHr = CoInitializeEx(0, 0); // Ensure COM initialized & balanced on ThreadPool worker under NativeAOT

@@ -26,13 +26,17 @@ public sealed class FluxSettings
     public string PresenceStatus { get; set; } = "online"; // online, idle, dnd, invisible
     public string PreferredRtcRegion { get; set; } = ""; // empty = Auto-Fastest benchmarked region
     public bool TurboLowLatency { get; set; } = true;
-    public bool AutoCheckUpdates { get; set; } = false;
-    public bool AutoDownloadUpdates { get; set; } = false;
+    public bool AutoCheckUpdates { get; set; } = true;
+    public bool AutoDownloadUpdates { get; set; } = true;
+    public bool UpdaterV2Enabled { get; set; }
     public bool CloseToTray { get; set; } = true;
 
     // P2P + Jetson Orin Nano Identity & Room Config
     public string P2pUserId { get; set; } = "";
     public string P2pNickname { get; set; } = "";
+    public string P2pAvatar { get; set; } = "";
+    public string P2pActivity { get; set; } = "";
+    public bool AutoImportedDiscordProfile { get; set; }
     public string P2pHostList { get; set; } = "192.168.100.72:37400,jetsno-orion.local:37400,185.27.71.230:37400";
 
     // Voice & Multi-Backend Noise Suppression
@@ -161,6 +165,12 @@ public static class SettingsStore
             }
             if (string.IsNullOrEmpty(Current.P2pNickname))
                 Current.P2pNickname = Environment.UserName;
+            if (!Current.UpdaterV2Enabled)
+            {
+                Current.UpdaterV2Enabled = true;
+                Current.AutoCheckUpdates = true;
+                Current.AutoDownloadUpdates = true;
+            }
             Current.MigratedFromDorion = true;
             SaveLocked();
         }

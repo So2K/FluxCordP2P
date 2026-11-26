@@ -42,7 +42,7 @@ public sealed class ResumeSession
 /// </summary>
 public static class Updater
 {
-    public const string CurrentVersion = "2.0.0";
+    public const string CurrentVersion = "2.1.0";
     public const string Repo = "So2K/FluxCordP2P";
     public static readonly string UpdatesDir = Path.Combine(SettingsStore.DataDir, "updates");
     public static readonly string ResumePath = Path.Combine(SettingsStore.DataDir, "resume_session.json");
@@ -65,7 +65,7 @@ public static class Updater
     public static string StatusText { get; private set; } = $"Версия v{CurrentVersion}";
 
     public static bool HasUpdate => AvailableVersion != null && (DownloadUrl != null || IsReadyToApply);
-    public static bool IsReadyToApply => !string.IsNullOrEmpty(StagedDir) && File.Exists(Path.Combine(StagedDir, "FluxCord.exe"));
+    public static bool IsReadyToApply => !string.IsNullOrEmpty(StagedDir) && File.Exists(Path.Combine(StagedDir, "FluxCordP2P.exe"));
 
     public static ResumeSession? PendingResume { get; private set; }
 
@@ -155,8 +155,8 @@ public static class Updater
             try { saved = File.ReadAllText(marker).Trim(); } catch { }
             if (!string.Equals(saved, expectedSha256, StringComparison.OrdinalIgnoreCase)) return null;
         }
-        if (File.Exists(Path.Combine(stageRoot, "FluxCord.exe"))) return stageRoot;
-        return Directory.GetDirectories(stageRoot).FirstOrDefault(d => File.Exists(Path.Combine(d, "FluxCord.exe")));
+        if (File.Exists(Path.Combine(stageRoot, "FluxCordP2P.exe"))) return stageRoot;
+        return Directory.GetDirectories(stageRoot).FirstOrDefault(d => File.Exists(Path.Combine(d, "FluxCordP2P.exe")));
     }
 
     public static void InitOnStartup(bool resumedArg)
@@ -244,8 +244,110 @@ public static class Updater
 
     public static void Check(bool manual = false)
     {
-        StatusText = $"FluxCord P2P v{CurrentVersion} • Jetson Orin Edition";
+        if (_checking || _downloading || _applying) return;
+        _checking = true;
+        if (manual) StatusText = "Проверяю обновления на GitHub...";
         App.WakeUi();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{Repo}/releases/latest");
+                req.Headers.Accept.ParseAdd("application/vnd.github+json");
+                using var resp = await Http.SendAsync(req, cts.Token);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _checking = false;
+                    StatusText = $"Версия v{CurrentVersion}";
+                    if (manual) Shell.Toast($"Не удалось проверить обновления (HTTP {(int)resp.StatusCode})");
+                    App.WakeUi();
+                    return;
+                }
+
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsByteArrayAsync(cts.Token));
+                var root = doc.RootElement;
+                string tag = (root.TryGetProperty("tag_name", out var tEl) ? tEl.GetString() ?? "" : "").TrimStart('v', 'V').Trim();
+                string body = root.TryGetProperty("body", out var bEl) && bEl.ValueKind == JsonValueKind.String ? bEl.GetString() ?? "" : "";
+
+                string? zipUrl = null, zipName = null, sha256 = null;
+                long zipSize = 0;
+                if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        string an = a.TryGetProperty("name", out var ne) ? ne.GetString() ?? "" : "";
+                        string au = a.TryGetProperty("browser_download_url", out var ue) ? ue.GetString() ?? "" : "";
+                        if (!an.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(au)) continue;
+                        bool preferred = an.Contains("win-x64", StringComparison.OrdinalIgnoreCase) || an.Contains("FluxCordP2P", StringComparison.OrdinalIgnoreCase);
+                        if (zipUrl == null || preferred)
+                        {
+                            zipName = Path.GetFileName(an);
+                            zipUrl = au;
+                            zipSize = a.TryGetProperty("size", out var se) && se.ValueKind == JsonValueKind.Number ? se.GetInt64() : 0;
+                            sha256 = null;
+                            if (a.TryGetProperty("digest", out var de) && de.ValueKind == JsonValueKind.String)
+                            {
+                                string d = de.GetString() ?? "";
+                                if (d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) sha256 = d[7..].Trim().ToLowerInvariant();
+                            }
+                            if (!IsValidHexSha256(sha256))
+                                sha256 = ExtractSha256FromReleaseBody(body, zipName);
+                            if (preferred) break;
+                        }
+                    }
+                }
+
+                bool newer = IsSafeVersionTag(tag) && IsNewer(tag, CurrentVersion) && !string.IsNullOrEmpty(zipUrl) && IsValidHexSha256(sha256);
+                _checking = false;
+
+                if (newer)
+                {
+                    AvailableVersion = tag;
+                    DownloadUrl = zipUrl;
+                    AssetName = Path.GetFileName(zipName ?? $"FluxCordP2P-{tag}-win-x64.zip");
+                    AssetSize = zipSize;
+                    ExpectedSha256 = sha256;
+                    ReleaseNotes = TruncateSafe(body, 420);
+
+                    string? preStage = FindStagedExeDir(Path.Combine(UpdatesDir, "v" + tag, "stage"), ExpectedSha256);
+                    if (preStage != null)
+                    {
+                        StagedDir = preStage;
+                        Progress = 1.0;
+                        StatusText = $"Готово к установке: v{tag} (мгновенно, вернёт в звонок)";
+                        Shell.Toast($"⚡ Обновление FluxCord P2P v{tag} готово — нажми «⬆ Обновить»!", 4500);
+                    }
+                    else
+                    {
+                        StagedDir = null;
+                        StatusText = $"Доступно обновление v{tag} ({FormatSize(zipSize)})";
+                        if (SettingsStore.Current.AutoDownloadUpdates)
+                            _ = DownloadAndStageAsync(autoApply: false);
+                        else if (manual)
+                            Shell.Toast($"Доступна новая версия FluxCord P2P v{tag}!", 4000);
+                    }
+                }
+                else
+                {
+                    AvailableVersion = null;
+                    DownloadUrl = null;
+                    StagedDir = null;
+                    StatusText = $"Актуальная версия v{CurrentVersion}";
+                    if (manual) Shell.Toast($"Установлена последняя версия FluxCord P2P (v{CurrentVersion})");
+                }
+                App.WakeUi();
+            }
+            catch (Exception ex)
+            {
+                _checking = false;
+                SettingsStore.Log("Updater check error: " + ex.Message);
+                StatusText = $"Версия v{CurrentVersion}";
+                if (manual) Shell.Toast("Ошибка проверки обновлений: " + ex.Message);
+                App.WakeUi();
+            }
+        });
     }
 
     private static void UnusedDiscordCheck(bool manual = false)
@@ -400,9 +502,9 @@ public static class Updater
         string url = DownloadUrl;
         string? wantSha = ExpectedSha256;
         string verDir = Path.Combine(UpdatesDir, "v" + ver);
-        string safeAsset = Path.GetFileName(AssetName ?? $"FluxCord-{ver}-win-x64.zip");
+        string safeAsset = Path.GetFileName(AssetName ?? $"FluxCordP2P-{ver}-win-x64.zip");
         if (string.IsNullOrEmpty(safeAsset) || !safeAsset.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            safeAsset = $"FluxCord-{ver}-win-x64.zip";
+            safeAsset = $"FluxCordP2P-{ver}-win-x64.zip";
         string zipPath = Path.Combine(verDir, safeAsset);
         string partPath = zipPath + ".part";
         string stageRoot = Path.Combine(verDir, "stage");
@@ -468,7 +570,7 @@ public static class Updater
 
             string? stageDir = FindStagedExeDir(stageRoot, wantSha);
             if (stageDir == null)
-                throw new InvalidOperationException("В архиве обновления не найден FluxCord.exe");
+                throw new InvalidOperationException("В архиве обновления не найден FluxCordP2P.exe");
 
             StagedDir = stageDir;
             Progress = 1.0;
@@ -525,7 +627,7 @@ public static class Updater
             string backupDir = Path.Combine(UpdatesDir, "backup_prev");
             string swapPs1 = Path.Combine(UpdatesDir, "apply_update.ps1");
             string errFile = ErrorMarkerPath;
-            string newExe = Path.Combine(appDir, "FluxCord.exe");
+            string newExe = Path.Combine(appDir, "FluxCordP2P.exe");
 
             static string PsQuote(string s) => "'" + s.Replace("'", "''") + "'";
             string script = $@"

@@ -10,6 +10,7 @@
 #include <codecapi.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
+#include <d3dcompiler.h>
 #include <dxgi1_5.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -395,6 +396,7 @@ void ScreenEngine::captureEncodeLoop() {
     ComPtr<IDXGIAdapter1> chosenAdapter;
     ComPtr<IDXGIOutput1> chosenOutput;
     ComPtr<IDXGIOutput1> chosenOutput2;
+    RECT deskRect0{}, deskRect1{};
     int32_t idx = 0;
     ComPtr<IDXGIAdapter1> ad;
     for (UINT a = 0; fac->EnumAdapters1(a, &ad) != DXGI_ERROR_NOT_FOUND; ++a) {
@@ -406,12 +408,15 @@ void ScreenEngine::captureEncodeLoop() {
             if (dualMode) {
                 if (!chosenOutput) {
                     chosenAdapter = ad;
+                    deskRect0 = od.DesktopCoordinates;
                     out.As(&chosenOutput);
                 } else if (!chosenOutput2 && ad.Get() == chosenAdapter.Get()) {
+                    deskRect1 = od.DesktopCoordinates;
                     out.As(&chosenOutput2);
                 }
             } else if (idx == monitor_idx_) {
                 chosenAdapter = ad;
+                deskRect0 = od.DesktopCoordinates;
                 out.As(&chosenOutput);
                 break;
             }
@@ -472,12 +477,51 @@ void ScreenEngine::captureEncodeLoop() {
         return true;
     };
 
+    auto seedCacheFromGdiRect = [&](RECT rc, ComPtr<ID3D11Texture2D>& outTex) {
+        int rw = rc.right - rc.left, rh = rc.bottom - rc.top;
+        if (rw < 64 || rh < 64) return;
+        HDC sdc = GetDC(nullptr);
+        if (!sdc) return;
+        HDC mdc = CreateCompatibleDC(sdc);
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = rw;
+        bi.bmiHeader.biHeight = -rh;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void* bits = nullptr;
+        HBITMAP dib = mdc ? CreateDIBSection(mdc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+        if (dib && bits) {
+            HGDIOBJ old = SelectObject(mdc, dib);
+            if (BitBlt(mdc, 0, 0, rw, rh, sdc, rc.left, rc.top, SRCCOPY | CAPTUREBLT)) {
+                uint8_t* px = static_cast<uint8_t*>(bits);
+                size_t cnt = size_t(rw) * size_t(rh);
+                for (size_t i = 0; i < cnt; ++i) px[i * 4 + 3] = 255;
+                D3D11_TEXTURE2D_DESC td{};
+                td.Width = UINT(rw); td.Height = UINT(rh);
+                td.MipLevels = 1; td.ArraySize = 1;
+                td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                td.SampleDesc.Count = 1;
+                td.Usage = D3D11_USAGE_DEFAULT;
+                td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                D3D11_SUBRESOURCE_DATA sd{ bits, UINT(rw * 4), 0 };
+                outTex.Reset();
+                dev->CreateTexture2D(&td, &sd, &outTex);
+            }
+            SelectObject(mdc, old);
+        }
+        if (dib) DeleteObject(dib);
+        if (mdc) DeleteDC(mdc);
+        ReleaseDC(nullptr, sdc);
+    };
+
     auto initDesktopDup = [&]() -> bool {
         bool ok1 = openDupOnOutput(chosenOutput, dup, srcW, srcH);
         if (isDualActive) {
             openDupOnOutput(chosenOutput2, dup2, srcW2, srcH2);
-            dualCache0.Reset();
-            dualCache1.Reset();
+            seedCacheFromGdiRect(deskRect0, dualCache0);
+            seedCacheFromGdiRect(deskRect1, dualCache1);
         }
         return ok1;
     };
@@ -566,6 +610,87 @@ void ScreenEngine::captureEncodeLoop() {
         return r;
     };
 
+    // D3D11 Fullscreen-Triangle HLSL Blitter (composites mismatched 4K+1080p Dual-Screen & renders RGB preview with ZERO NV12 green!)
+    ComPtr<ID3D11VertexShader> quadVs;
+    ComPtr<ID3D11PixelShader> quadPs;
+    ComPtr<ID3D11SamplerState> quadSmp;
+    ComPtr<ID3D11RasterizerState> quadRs;
+    ComPtr<ID3D11Texture2D> dualCompTex;
+    ComPtr<ID3D11RenderTargetView> dualCompRtv;
+    {
+        static const char* kHlsl = R"(
+            Texture2D tex0 : register(t0);
+            SamplerState smp0 : register(s0);
+            struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+            VSOut VS(uint id : SV_VertexID) {
+                VSOut o;
+                o.uv = float2((id << 1) & 2, id & 2);
+                o.pos = float4(o.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+                return o;
+            }
+            float4 PS(VSOut i) : SV_Target {
+                float4 c = tex0.Sample(smp0, i.uv);
+                return float4(saturate(c.rgb), 1.0);
+            }
+        )";
+        ComPtr<ID3DBlob> vsBlob, psBlob;
+        if (SUCCEEDED(D3DCompile(kHlsl, std::strlen(kHlsl), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vsBlob, nullptr)) &&
+            SUCCEEDED(D3DCompile(kHlsl, std::strlen(kHlsl), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &psBlob, nullptr))) {
+            dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &quadVs);
+            dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &quadPs);
+        }
+        D3D11_SAMPLER_DESC sd{};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        dev->CreateSamplerState(&sd, &quadSmp);
+        D3D11_RASTERIZER_DESC rd{};
+        rd.FillMode = D3D11_FILL_SOLID;
+        rd.CullMode = D3D11_CULL_NONE;
+        dev->CreateRasterizerState(&rd, &quadRs);
+
+        if (isDualActive) {
+            D3D11_TEXTURE2D_DESC cd{};
+            cd.Width = dstW; cd.Height = dstH;
+            cd.MipLevels = 1; cd.ArraySize = 1;
+            cd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            cd.SampleDesc.Count = 1;
+            cd.Usage = D3D11_USAGE_DEFAULT;
+            cd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(dev->CreateTexture2D(&cd, nullptr, &dualCompTex))) {
+                dev->CreateRenderTargetView(dualCompTex.Get(), nullptr, &dualCompRtv);
+            }
+        }
+    }
+
+    auto drawTexIntoRtv = [&](ID3D11RenderTargetView* rtv, ID3D11Texture2D* srcTex, RECT vpRc) -> bool {
+        if (!rtv || !srcTex || !quadVs || !quadPs || !quadSmp) return false;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        if (FAILED(dev->CreateShaderResourceView(srcTex, nullptr, &srv))) return false;
+        D3D11_VIEWPORT vp3d{};
+        vp3d.TopLeftX = float(vpRc.left);
+        vp3d.TopLeftY = float(vpRc.top);
+        vp3d.Width = float(std::max<LONG>(1, vpRc.right - vpRc.left));
+        vp3d.Height = float(std::max<LONG>(1, vpRc.bottom - vpRc.top));
+        vp3d.MinDepth = 0.0f; vp3d.MaxDepth = 1.0f;
+        ctx->OMSetRenderTargets(1, &rtv, nullptr);
+        ctx->RSSetState(quadRs.Get());
+        ctx->RSSetViewports(1, &vp3d);
+        ctx->IASetInputLayout(nullptr);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(quadVs.Get(), nullptr, 0);
+        ctx->PSSetShader(quadPs.Get(), nullptr, 0);
+        ID3D11SamplerState* smps[1] = { quadSmp.Get() };
+        ctx->PSSetSamplers(0, 1, smps);
+        ID3D11ShaderResourceView* srvs[1] = { srv.Get() };
+        ctx->PSSetShaderResources(0, 1, srvs);
+        ctx->Draw(3, 0);
+        ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
+        ctx->PSSetShaderResources(0, 1, nullSrv);
+        ID3D11RenderTargetView* nullRtv[1] = { nullptr };
+        ctx->OMSetRenderTargets(1, nullRtv, nullptr);
+        return true;
+    };
+
     auto rebuildVideoProcessor = [&]() {
         hasVp = false;
         canDualSingleBlt = false;
@@ -575,21 +700,15 @@ void ScreenEngine::captureEncodeLoop() {
         if (!vdev || !vctx) return;
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC vdesc{};
         vdesc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-        vdesc.InputWidth = isDualActive ? std::max(srcW, srcW2) : srcW;
-        vdesc.InputHeight = isDualActive ? std::max(srcH, srcH2) : srcH;
+        // In Dual-Screen mode, input to VideoProcessor is ALWAYS the 3840x1080 BGRA dualCompTex (exact 1:1 match to dstW x dstH!)
+        vdesc.InputWidth = isDualActive ? dstW : srcW;
+        vdesc.InputHeight = isDualActive ? dstH : srcH;
         vdesc.OutputWidth = dstW; vdesc.OutputHeight = dstH;
         vdesc.Usage = D3D11_VIDEO_USAGE_OPTIMAL_SPEED;
         if (SUCCEEDED(vdev->CreateVideoProcessorEnumerator(&vdesc, &vpenum)) &&
             SUCCEEDED(vdev->CreateVideoProcessor(vpenum.Get(), 0, &vp))) {
-            D3D11_VIDEO_PROCESSOR_CAPS vpCaps{};
-            if (SUCCEEDED(vpenum->GetVideoProcessorCaps(&vpCaps))) {
-                canDualSingleBlt = (vpCaps.MaxInputStreams >= 2 && vpCaps.MaxStreamStates >= 2);
-            }
             if (vctx1) {
                 vctx1->VideoProcessorSetStreamColorSpace1(vp.Get(), 0, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-                if (canDualSingleBlt) {
-                    vctx1->VideoProcessorSetStreamColorSpace1(vp.Get(), 1, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-                }
                 vctx1->VideoProcessorSetOutputColorSpace1(vp.Get(), DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
             }
             D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd{};
@@ -946,74 +1065,38 @@ void ScreenEngine::captureEncodeLoop() {
             drainAsyncEvents();
             const bool canSubmit = hasHwEnc && encMft && ((!isAsyncMft) || (asyncNeedInput > 0));
             int surfIdx = nv12LastIdx;
+            ID3D11Texture2D* rgbPreviewSource = deskTex.Get();
             if (deskTex) {
-                // Only write/advance NV12 encoder ring when NVENC is ready for input; otherwise write dedicated scratch slot 4!
                 surfIdx = canSubmit ? nv12CurIdx : kPreviewScratchIdx;
-                D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
-                ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-                if (isDualActive) {
-                    // ZERO-COPY Dual-Screen GPU Composite: Left half = Monitor 1, Right half = Monitor 2 (2px dark divider, aspect-preserving)!
+                ID3D11Texture2D* vpInputBgra = deskTex.Get();
+                if (isDualActive && dualCompTex && dualCompRtv) {
+                    // ZERO-COPY D3D11 HLSL Dual-Screen Composite: handles 3840x2160 + 1920x1080 + 10-bit/HDR seamlessly with ZERO NV12 green!
                     ID3D11Texture2D* texL = dualCache0 ? dualCache0.Get() : deskTex.Get();
                     ID3D11Texture2D* texR = dualCache1 ? dualCache1.Get() : texL;
-                    ComPtr<ID3D11VideoProcessorInputView> vpInL, vpInR;
-                    if (SUCCEEDED(vdev->CreateVideoProcessorInputView(texL, vpenum.Get(), &ivd, &vpInL)) &&
-                        SUCCEEDED(vdev->CreateVideoProcessorInputView(texR, vpenum.Get(), &ivd, &vpInR))) {
-                        D3D11_TEXTURE2D_DESC tdL{}, tdR{};
-                        texL->GetDesc(&tdL);
-                        texR->GetDesc(&tdR);
-                        RECT srcL{ 0, 0, LONG(tdL.Width), LONG(tdL.Height) };
-                        RECT srcR{ 0, 0, LONG(tdR.Width), LONG(tdR.Height) };
-                        RECT boxL{ 0, 0, LONG(dstW / 2 - 2), LONG(dstH) };
-                        RECT boxR{ LONG(dstW / 2 + 2), 0, LONG(dstW), LONG(dstH) };
-                        RECT rcL = fitLetterboxRect(tdL.Width, tdL.Height, boxL);
-                        RECT rcR = fitLetterboxRect(tdR.Width, tdR.Height, boxR);
-                        D3D11_VIDEO_COLOR bg{};
-                        bg.RGBA = { 0.04f, 0.04f, 0.06f, 1.0f };
-                        vctx->VideoProcessorSetOutputBackgroundColor(vp.Get(), FALSE, &bg);
-                        if (canDualSingleBlt) {
-                            vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &srcL);
-                            vctx->VideoProcessorSetStreamDestRect(vp.Get(), 0, TRUE, &rcL);
-                            vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 1, TRUE, &srcR);
-                            vctx->VideoProcessorSetStreamDestRect(vp.Get(), 1, TRUE, &rcR);
-                            D3D11_VIDEO_PROCESSOR_STREAM sts[2]{};
-                            sts[0].Enable = TRUE; sts[0].pInputSurface = vpInL.Get();
-                            sts[1].Enable = TRUE; sts[1].pInputSurface = vpInR.Get();
-                            vctx->VideoProcessorBlt(vp.Get(), vpOutRing[surfIdx].Get(), 0, 2, sts);
-                        } else {
-                            // Safe 2-pass fallback for GPUs with MaxInputStreams == 1
-                            D3D11_VIDEO_PROCESSOR_STREAM st{};
-                            st.Enable = TRUE;
-                            vctx->VideoProcessorSetOutputTargetRect(vp.Get(), TRUE, &boxL);
-                            vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &srcL);
-                            vctx->VideoProcessorSetStreamDestRect(vp.Get(), 0, TRUE, &rcL);
-                            st.pInputSurface = vpInL.Get();
-                            vctx->VideoProcessorBlt(vp.Get(), vpOutRing[surfIdx].Get(), 0, 1, &st);
+                    const float darkBg[4] = { 0.04f, 0.04f, 0.06f, 1.0f };
+                    ctx->ClearRenderTargetView(dualCompRtv.Get(), darkBg);
+                    D3D11_TEXTURE2D_DESC tdL{}, tdR{};
+                    texL->GetDesc(&tdL);
+                    texR->GetDesc(&tdR);
+                    RECT boxL{ 0, 0, LONG(dstW / 2 - 2), LONG(dstH) };
+                    RECT boxR{ LONG(dstW / 2 + 2), 0, LONG(dstW), LONG(dstH) };
+                    drawTexIntoRtv(dualCompRtv.Get(), texL, fitLetterboxRect(tdL.Width, tdL.Height, boxL));
+                    drawTexIntoRtv(dualCompRtv.Get(), texR, fitLetterboxRect(tdR.Width, tdR.Height, boxR));
+                    vpInputBgra = dualCompTex.Get();
+                    rgbPreviewSource = dualCompTex.Get();
+                }
 
-                            vctx->VideoProcessorSetOutputTargetRect(vp.Get(), TRUE, &boxR);
-                            vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &srcR);
-                            vctx->VideoProcessorSetStreamDestRect(vp.Get(), 0, TRUE, &rcR);
-                            st.pInputSurface = vpInR.Get();
-                            vctx->VideoProcessorBlt(vp.Get(), vpOutRing[surfIdx].Get(), 0, 1, &st);
-                            vctx->VideoProcessorSetOutputTargetRect(vp.Get(), FALSE, nullptr);
-                        }
-                        if (canSubmit) {
-                            nv12LastIdx = surfIdx;
-                            nv12CurIdx = (nv12CurIdx + 1) % kEncRing;
-                            hasLastNv12Frame = true;
-                        }
-                    }
-                } else {
-                    ComPtr<ID3D11VideoProcessorInputView> vpIn;
-                    if (SUCCEEDED(vdev->CreateVideoProcessorInputView(deskTex.Get(), vpenum.Get(), &ivd, &vpIn))) {
-                        D3D11_VIDEO_PROCESSOR_STREAM st{};
-                        st.Enable = TRUE;
-                        st.pInputSurface = vpIn.Get();
-                        vctx->VideoProcessorBlt(vp.Get(), vpOutRing[surfIdx].Get(), 0, 1, &st);
-                        if (canSubmit) {
-                            nv12LastIdx = surfIdx;
-                            nv12CurIdx = (nv12CurIdx + 1) % kEncRing;
-                            hasLastNv12Frame = true;
-                        }
+                D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
+                ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+                ComPtr<ID3D11VideoProcessorInputView> vpIn;
+                if (SUCCEEDED(vdev->CreateVideoProcessorInputView(vpInputBgra, vpenum.Get(), &ivd, &vpIn))) {
+                    D3D11_VIDEO_PROCESSOR_STREAM st{};
+                    st.Enable = TRUE;
+                    st.pInputSurface = vpIn.Get();
+                    if (SUCCEEDED(vctx->VideoProcessorBlt(vp.Get(), vpOutRing[surfIdx].Get(), 0, 1, &st)) && canSubmit) {
+                        nv12LastIdx = surfIdx;
+                        nv12CurIdx = (nv12CurIdx + 1) % kEncRing;
+                        hasLastNv12Frame = true;
                     }
                 }
             }
@@ -1025,7 +1108,7 @@ void ScreenEngine::captureEncodeLoop() {
             }
 
             // Feed VRAM NV12 surface directly to Hardware NVENC MFT
-            if (canSubmit && nv12Ring[surfIdx]) {
+            if (canSubmit && hasLastNv12Frame && nv12Ring[surfIdx]) {
                 {
                     auto nowKf2 = std::chrono::steady_clock::now();
                     bool wantKf = force_keyframe_.load() && (nowKf2 - lastKfTime >= std::chrono::milliseconds(500));
@@ -1064,23 +1147,20 @@ void ScreenEngine::captureEncodeLoop() {
             auto tEnc1 = std::chrono::steady_clock::now();
             encMs = std::chrono::duration<float, std::milli>(tEnc1 - tEnc0).count();
 
-            // Zero-Copy Preview Present directly from VRAM NV12 -> DXGI FlipDiscard SwapChain
-            if (previewSwap && prevVp && prevEnum && nv12Ring[surfIdx]) {
+            // Direct RGB Preview Present from VRAM BGRA -> DXGI FlipDiscard SwapChain (0% chance of green!)
+            if (previewSwap && rgbPreviewSource) {
                 auto tDec0 = std::chrono::steady_clock::now();
                 ComPtr<ID3D11Texture2D> backBuf;
-                if (SUCCEEDED(previewSwap->GetBuffer(0, IID_PPV_ARGS(&backBuf)))) {
-                    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC piv{};
-                    piv.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-                    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC pov{};
-                    pov.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-                    ComPtr<ID3D11VideoProcessorInputView> pin;
-                    ComPtr<ID3D11VideoProcessorOutputView> pout;
-                    if (SUCCEEDED(vdev->CreateVideoProcessorInputView(nv12Ring[surfIdx].Get(), prevEnum.Get(), &piv, &pin)) &&
-                        SUCCEEDED(vdev->CreateVideoProcessorOutputView(backBuf.Get(), prevEnum.Get(), &pov, &pout))) {
-                        D3D11_VIDEO_PROCESSOR_STREAM pst{};
-                        pst.Enable = TRUE;
-                        pst.pInputSurface = pin.Get();
-                        vctx->VideoProcessorBlt(prevVp.Get(), pout.Get(), 0, 1, &pst);
+                ComPtr<ID3D11RenderTargetView> backRtv;
+                if (SUCCEEDED(previewSwap->GetBuffer(0, IID_PPV_ARGS(&backBuf))) &&
+                    SUCCEEDED(dev->CreateRenderTargetView(backBuf.Get(), nullptr, &backRtv))) {
+                    D3D11_TEXTURE2D_DESC bbd{}, srd{};
+                    backBuf->GetDesc(&bbd);
+                    rgbPreviewSource->GetDesc(&srd);
+                    const float blk[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+                    ctx->ClearRenderTargetView(backRtv.Get(), blk);
+                    RECT fullBox{ 0, 0, LONG(bbd.Width), LONG(bbd.Height) };
+                    if (drawTexIntoRtv(backRtv.Get(), rgbPreviewSource, fitLetterboxRect(srd.Width, srd.Height, fullBox))) {
                         previewSwap->Present(0, 0);
                     }
                 }
@@ -1135,6 +1215,12 @@ void ScreenEngine::captureEncodeLoop() {
     vpenum.Reset();
     dup.Reset();
     dup2.Reset();
+    dualCompRtv.Reset();
+    dualCompTex.Reset();
+    quadRs.Reset();
+    quadSmp.Reset();
+    quadPs.Reset();
+    quadVs.Reset();
     dualCache0.Reset();
     dualCache1.Reset();
     winUploadTex.Reset();

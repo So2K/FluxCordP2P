@@ -346,6 +346,8 @@ public sealed class DiscordClient
             Id = uid,
             Username = nick.ToLowerInvariant().Replace(" ", "_"),
             DisplayName = nick,
+            Avatar = SettingsStore.Current.P2pAvatar ?? "",
+            ActivityText = SettingsStore.Current.P2pActivity ?? "",
             Status = SettingsStore.Current.PresenceStatus
         };
 
@@ -702,6 +704,8 @@ public sealed class DiscordClient
             w.WriteString("user_id", Me.Id);
             w.WriteString("username", Me.Username);
             w.WriteString("display_name", Me.DisplayName);
+            if (!string.IsNullOrEmpty(Me.Avatar)) w.WriteString("avatar", Me.Avatar);
+            if (!string.IsNullOrEmpty(Me.ActivityText)) w.WriteString("activity", Me.ActivityText);
             w.WriteString("lan_ip", _lanIp);
             w.WriteString("status", SettingsStore.Current.PresenceStatus);
             w.WriteNumber("color", color);
@@ -1043,6 +1047,20 @@ public sealed class DiscordClient
     private void HandleWelcome(JsonElement root)
     {
         string srvName = root.TryGetProperty("server_name", out var sn) ? sn.GetString() ?? "FluxCord P2P • Jetson" : "FluxCord P2P • Jetson";
+        if (root.TryGetProperty("my_avatar", out var mav) && mav.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(mav.GetString()))
+        {
+            string av = mav.GetString()!;
+            if (av.StartsWith("/files/", StringComparison.Ordinal)) av = "fluxp2p://" + av.TrimStart('/');
+            Me.Avatar = av;
+            SettingsStore.Current.P2pAvatar = av;
+            SettingsStore.Save();
+        }
+        if (root.TryGetProperty("my_activity", out var mact) && mact.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(mact.GetString()))
+        {
+            Me.ActivityText = mact.GetString()!;
+            SettingsStore.Current.P2pActivity = Me.ActivityText;
+            SettingsStore.Save();
+        }
         _mediaHost = root.TryGetProperty("media_host", out var mh) ? mh.GetString() ?? "192.168.100.72" : "192.168.100.72";
         _mediaPort = root.TryGetProperty("media_port", out var mp) ? (ushort)mp.GetInt32() : (ushort)37401;
         if (root.TryGetProperty("jetson_ext_ip", out var jip) && jip.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(jip.GetString()))
@@ -1109,7 +1127,16 @@ public sealed class DiscordClient
 
         SettingsStore.Log($"Welcome OK: media={_mediaHost}:{_mediaPort} voice_ssrc={_voiceSsrc} pub_v={_pubVideoSsrc} mqtt={_usingMqttRendezvous}");
         Notify();
-        if (firstConnect) ReadyCompleted?.Invoke();
+        if (firstConnect)
+        {
+            ReadyCompleted?.Invoke();
+            if (string.IsNullOrEmpty(Me.Avatar) && !SettingsStore.Current.AutoImportedDiscordProfile)
+            {
+                SettingsStore.Current.AutoImportedDiscordProfile = true;
+                SettingsStore.Save();
+                _ = TryImportFromDiscordAsync(silent: true);
+            }
+        }
     }
 
     private void ApplyChannelsSnapshot(JsonElement chsArr, string? serverName)
@@ -1180,6 +1207,8 @@ public sealed class DiscordClient
 
             string uname = pEl.TryGetProperty("username", out var un) ? un.GetString() ?? uid : uid;
             string dname = pEl.TryGetProperty("display_name", out var dn) ? dn.GetString() ?? uname : uname;
+            string av = pEl.TryGetProperty("avatar", out var ave) ? ave.GetString() ?? "" : "";
+            if (av.StartsWith("/files/", StringComparison.Ordinal)) av = "fluxp2p://" + av.TrimStart('/');
             string status = pEl.TryGetProperty("status", out var st) ? st.GetString() ?? "online" : "online";
             string act = pEl.TryGetProperty("activity_text", out var ac) ? ac.GetString() ?? "" : "";
             string vcid = pEl.TryGetProperty("voice_channel_id", out var vc) ? vc.GetString() ?? "" : "";
@@ -1213,7 +1242,8 @@ public sealed class DiscordClient
                     MediaNative.fc_voice_set_user_volume(vSsrc, uv);
             }
 
-            Users[uid] = new DiscordUser { Id = uid, Username = uname, DisplayName = dname, Status = status, ActivityText = act };
+            if (uid == Me.Id && !string.IsNullOrEmpty(av)) Me.Avatar = av;
+            Users[uid] = new DiscordUser { Id = uid, Username = uname, DisplayName = dname, Avatar = av, Status = status, ActivityText = act };
             lock (mset) mset.Add(uid);
 
             if (uid != Me.Id)
@@ -1223,6 +1253,7 @@ public sealed class DiscordClient
                     UserId = uid,
                     Username = uname,
                     DisplayName = dname,
+                    Avatar = av,
                     Status = status,
                     ActivityText = string.IsNullOrEmpty(act) ? (vcid != "" ? "🔊 В голосовой комнате" : "⚡ P2P Онлайн") : act,
                     Type = 1
@@ -1236,6 +1267,7 @@ public sealed class DiscordClient
                     UserId = uid,
                     ChannelId = vcid,
                     Username = dname,
+                    Avatar = av,
                     SelfMute = sm,
                     SelfDeaf = sd,
                     SelfStream = ss,
@@ -2092,6 +2124,200 @@ public sealed class DiscordClient
         Me.Status = status;
         Notify();
         return IsConnected ? SendRpcAsync(w => { w.WriteString("op", "presence"); w.WriteString("status", status); }) : Task.CompletedTask;
+    }
+
+    public async Task<bool> SetProfileAsync(string? newNick, string? newActivity, string? newAvatar)
+    {
+        bool changed = false;
+        if (!string.IsNullOrWhiteSpace(newNick))
+        {
+            string dn = newNick.Trim();
+            if (dn.Length > 32) dn = dn[..32];
+            Me.DisplayName = dn;
+            Me.Username = dn.ToLowerInvariant().Replace(" ", "_");
+            SettingsStore.Current.P2pNickname = dn;
+            changed = true;
+        }
+        if (newActivity != null)
+        {
+            string act = newActivity.Trim();
+            if (act.Length > 64) act = act[..64];
+            Me.ActivityText = act;
+            SettingsStore.Current.P2pActivity = act;
+            changed = true;
+        }
+        if (newAvatar != null)
+        {
+            Me.Avatar = newAvatar;
+            SettingsStore.Current.P2pAvatar = newAvatar;
+            changed = true;
+        }
+        if (!changed) return false;
+        SettingsStore.Save();
+        Users[Me.Id] = Me;
+        Notify();
+        if (IsConnected && !IsDemoMode)
+        {
+            await SendRpcAsync(w =>
+            {
+                w.WriteString("op", "presence");
+                w.WriteString("status", Me.Status);
+                w.WriteString("display_name", Me.DisplayName);
+                w.WriteString("activity", Me.ActivityText ?? "");
+                w.WriteString("avatar", Me.Avatar ?? "");
+            });
+        }
+        return true;
+    }
+
+    private async Task<string?> UploadBytesToJetsonAsync(byte[] bytes, string fileName)
+    {
+        if (bytes.Length == 0 || bytes.Length > 6 * 1024 * 1024) return null;
+        string? serverRelPath = null;
+        if (!string.IsNullOrEmpty(_directHttpBase))
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, $"{_directHttpBase}/upload?name={Uri.EscapeDataString(fileName)}");
+                req.Headers.TryAddWithoutValidation("X-Room-Auth", ComputeHmacHex(_aeadKey, "fluxp2p-upload-v1"));
+                req.Content = new ByteArrayContent(bytes);
+                using var resp = await _http.SendAsync(req);
+                if (resp.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(await resp.Content.ReadAsByteArrayAsync());
+                    if (doc.RootElement.TryGetProperty("path", out var pe))
+                        serverRelPath = pe.GetString();
+                }
+            }
+            catch { }
+        }
+        if (string.IsNullOrEmpty(serverRelPath))
+        {
+            string reqId = Guid.NewGuid().ToString("N")[..10];
+            var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingUploads[reqId] = tcs;
+            await SendRpcAsync(w =>
+            {
+                w.WriteString("op", "upload_b64");
+                w.WriteString("req_id", reqId);
+                w.WriteString("filename", fileName);
+                w.WriteString("data_b64", Convert.ToBase64String(bytes));
+            });
+            using var cts = new CancellationTokenSource(12000);
+            cts.Token.Register(() => tcs.TrySetResult(null));
+            serverRelPath = await tcs.Task;
+            _pendingUploads.TryRemove(reqId, out _);
+        }
+        if (string.IsNullOrEmpty(serverRelPath)) return null;
+        return serverRelPath.StartsWith("/files/", StringComparison.Ordinal)
+            ? "fluxp2p://" + serverRelPath.TrimStart('/')
+            : serverRelPath;
+    }
+
+    public async Task<bool> SetCustomAvatarFromFileAsync(string filePath)
+    {
+        if (!File.Exists(filePath)) return false;
+        try
+        {
+            byte[] raw = await File.ReadAllBytesAsync(filePath);
+            byte[]? png = ImageCache.EncodeAvatarPng(raw, 192);
+            if (png == null || png.Length == 0)
+            {
+                App.InvokeOnUiThread(() => Shell.Toast("Не удалось прочитать картинку (выберите PNG/JPG/WEBP)", 3500));
+                return false;
+            }
+            string? url = await UploadBytesToJetsonAsync(png, $"av_{Me.Id}.png");
+            if (string.IsNullOrEmpty(url))
+            {
+                App.InvokeOnUiThread(() => Shell.Toast("Не удалось загрузить аватарку на Jetson", 3500));
+                return false;
+            }
+            await SetProfileAsync(null, null, url);
+            App.InvokeOnUiThread(() => Shell.Toast("✅ Аватарка обновлена для всех в P2P!", 3000));
+            return true;
+        }
+        catch { return false; }
+    }
+
+    public async Task<bool> TryImportFromDiscordAsync(bool silent = false)
+    {
+        try
+        {
+            // Read DPAPI-protected Discord token from main FluxCord installation if present
+            string fcSettings = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluxCord", "settings.json");
+            if (!File.Exists(fcSettings))
+            {
+                if (!silent) App.InvokeOnUiThread(() => Shell.Toast("Не найден профиль FluxCord (Discord) — загрузите картинку с ПК", 4000));
+                return false;
+            }
+            string? encB64 = null;
+            using (var doc = JsonDocument.Parse(await File.ReadAllTextAsync(fcSettings)))
+            {
+                if (doc.RootElement.TryGetProperty("EncryptedTokenB64", out var et) && et.ValueKind == JsonValueKind.String)
+                    encB64 = et.GetString();
+            }
+            if (string.IsNullOrEmpty(encB64))
+            {
+                if (!silent) App.InvokeOnUiThread(() => Shell.Toast("В FluxCord нет сохранённого входа Discord — выберите файл с ПК", 4000));
+                return false;
+            }
+            var plainBytes = W.UnprotectDpapi(Convert.FromBase64String(encB64));
+            string token = Encoding.UTF8.GetString(plainBytes).Trim();
+            if (string.IsNullOrEmpty(token)) return false;
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, "https://discord.com/api/v10/users/@me");
+            req.Headers.TryAddWithoutValidation("Authorization", token);
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            using var cts = new CancellationTokenSource(8000);
+            using var resp = await _http.SendAsync(req, cts.Token);
+            if (!resp.IsSuccessStatusCode)
+            {
+                if (!silent) App.InvokeOnUiThread(() => Shell.Toast("Discord API недоступен (РКН?) — выберите аватарку файлом с ПК", 4000));
+                return false;
+            }
+            using var meDoc = JsonDocument.Parse(await resp.Content.ReadAsByteArrayAsync(cts.Token));
+            var r = meDoc.RootElement;
+            string dId = r.TryGetProperty("id", out var ie) ? ie.GetString() ?? "" : "";
+            string dAv = r.TryGetProperty("avatar", out var ae) && ae.ValueKind == JsonValueKind.String ? ae.GetString() ?? "" : "";
+            if (string.IsNullOrEmpty(dId) || string.IsNullOrEmpty(dAv))
+            {
+                if (!silent) App.InvokeOnUiThread(() => Shell.Toast("В аккаунте Discord нет аватарки — выберите файл с ПК", 3500));
+                return false;
+            }
+
+            byte[]? avRaw = null;
+            foreach (string cdnUrl in new[] { $"https://cdn.discordapp.com/avatars/{dId}/{dAv}.png?size=256", $"https://media.discordapp.net/avatars/{dId}/{dAv}.png?size=256" })
+            {
+                try
+                {
+                    using var avResp = await _http.GetAsync(cdnUrl, cts.Token);
+                    if (avResp.IsSuccessStatusCode)
+                    {
+                        avRaw = await avResp.Content.ReadAsByteArrayAsync(cts.Token);
+                        if (avRaw.Length > 0) break;
+                    }
+                }
+                catch { }
+            }
+            if (avRaw == null || avRaw.Length == 0)
+            {
+                if (!silent) App.InvokeOnUiThread(() => Shell.Toast("Не удалось скачать аватар с Discord CDN — выберите файл с ПК", 4000));
+                return false;
+            }
+            byte[]? png = ImageCache.EncodeAvatarPng(avRaw, 192);
+            if (png == null || png.Length == 0) return false;
+            string? jetsonUrl = await UploadBytesToJetsonAsync(png, $"av_discord_{Me.Id}.png");
+            if (string.IsNullOrEmpty(jetsonUrl)) return false;
+
+            await SetProfileAsync(null, null, jetsonUrl);
+            App.InvokeOnUiThread(() => Shell.Toast("✅ Аватарка из Discord загружена на Jetson и видна всем!", 3500));
+            return true;
+        }
+        catch
+        {
+            if (!silent) App.InvokeOnUiThread(() => Shell.Toast("Не удалось подтянуть Discord — выберите аватарку файлом с ПК", 4000));
+            return false;
+        }
     }
 
     public Task<string?> CreateInviteUrlAsync(string channelId)

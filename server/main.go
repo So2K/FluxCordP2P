@@ -82,10 +82,17 @@ type MessageDto struct {
 	Reactions   []ReactionDto   `json:"reactions,omitempty"`
 }
 
+type SavedProfile struct {
+	DisplayName  string `json:"display_name"`
+	Avatar       string `json:"avatar"`
+	ActivityText string `json:"activity_text"`
+}
+
 type PersistedState struct {
 	ServerName string                  `json:"server_name"`
 	Channels   []Channel               `json:"channels"`
 	Messages   map[string][]MessageDto `json:"messages"`
+	Profiles   map[string]SavedProfile `json:"profiles,omitempty"`
 }
 
 type WatchSub struct {
@@ -273,6 +280,9 @@ func (h *Hub) loadOrInitState() {
 		if json.Unmarshal(raw, &h.state) == nil && len(h.state.Channels) > 0 {
 			if h.state.Messages == nil {
 				h.state.Messages = make(map[string][]MessageDto)
+			}
+			if h.state.Profiles == nil {
+				h.state.Profiles = make(map[string]SavedProfile)
 			}
 			return
 		}
@@ -597,6 +607,24 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 		}
 
 		h.mu.Lock()
+		if h.state.Profiles == nil {
+			h.state.Profiles = make(map[string]SavedProfile)
+		}
+		if savedProf, hasProf := h.state.Profiles[uid]; hasProf {
+			if av == "" && savedProf.Avatar != "" {
+				av = savedProf.Avatar
+			}
+			if act == "" && savedProf.ActivityText != "" {
+				act = savedProf.ActivityText
+			}
+			if (dname == "" || dname == "Player") && savedProf.DisplayName != "" {
+				dname = savedProf.DisplayName
+			}
+		}
+		if av != "" || dname != "" {
+			h.state.Profiles[uid] = SavedProfile{DisplayName: dname, Avatar: av, ActivityText: act}
+			h.markDirty()
+		}
 		// Evict any old stale session of same user_id
 		for oldSid, oldP := range h.peers {
 			if oldSid != p.SessionId && oldP.UserId == uid {
@@ -621,6 +649,9 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 			p.PubVideoSsrc = p.PubAudioSsrc + 1
 			h.ssrcOwner[p.PubVideoSsrc] = ssrcBinding{SessionId: p.SessionId, Role: rolePubV, Slot: 0}
 		}
+		myAv := p.Avatar
+		myDn := p.DisplayName
+		myAct := p.ActivityText
 		channelsCopy := append([]Channel(nil), h.state.Channels...)
 		msgsCopy := make(map[string][]MessageDto, len(h.state.Messages))
 		for cid, list := range h.state.Messages {
@@ -635,9 +666,12 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 		h.mu.Unlock()
 
 		h.sendToPeer(p, map[string]interface{}{
-			"op":             "welcome",
-			"server_name":    srvName,
-			"media_host":     mediaHost,
+			"op":              "welcome",
+			"server_name":     srvName,
+			"my_avatar":       myAv,
+			"my_display_name": myDn,
+			"my_activity":     myAct,
+			"media_host":      mediaHost,
 			"media_port":     mediaPort,
 			"jetson_lan_ip":  h.lanIp,
 			"jetson_udp_port": h.udpPort,
@@ -685,17 +719,50 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 		}
 
 	case "presence":
+		profChanged := false
 		h.mu.Lock()
 		if st, ok := req["status"].(string); ok && st != "" {
 			p.Status = st
 		}
 		if act, ok := req["activity"].(string); ok {
 			p.ActivityText = act
+			profChanged = true
 		}
-		if dn, ok := req["display_name"].(string); ok && dn != "" {
-			p.DisplayName = dn
+		if dn, ok := req["display_name"].(string); ok && strings.TrimSpace(dn) != "" {
+			p.DisplayName = strings.TrimSpace(dn)
+			profChanged = true
+		}
+		if av, ok := req["avatar"].(string); ok {
+			p.Avatar = strings.TrimSpace(av)
+			profChanged = true
+		}
+		if profChanged && p.UserId != "" {
+			if h.state.Profiles == nil {
+				h.state.Profiles = make(map[string]SavedProfile)
+			}
+			h.state.Profiles[p.UserId] = SavedProfile{
+				DisplayName:  p.DisplayName,
+				Avatar:       p.Avatar,
+				ActivityText: p.ActivityText,
+			}
+			for cid := range h.state.Messages {
+				list := h.state.Messages[cid]
+				for i := range list {
+					if list[i].AuthorId == p.UserId {
+						if p.DisplayName != "" {
+							list[i].AuthorName = p.DisplayName
+						}
+						if p.Avatar != "" {
+							list[i].Avatar = p.Avatar
+						}
+					}
+				}
+			}
 		}
 		h.mu.Unlock()
+		if profChanged {
+			h.markDirty()
+		}
 		h.broadcastPeersState()
 
 	case "voice_state":

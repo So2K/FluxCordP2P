@@ -18,9 +18,21 @@ public sealed class DiscordUser
     public string Status = "offline"; // online, idle, dnd, offline
     public string ActivityText = "";  // custom status / game / listening
 
-    public string? AvatarUrl => string.IsNullOrEmpty(Avatar) || string.IsNullOrEmpty(Id)
-        ? null
-        : $"https://cdn.discordapp.com/avatars/{Id}/{Avatar}.png?size=64";
+    public string? AvatarUrl => ResolveAvatarUrl(Id, Avatar, 64);
+
+    public static string? ResolveAvatarUrl(string? userId, string? avatar, int size = 64)
+    {
+        if (string.IsNullOrEmpty(avatar)) return null;
+        if (avatar.StartsWith("fluxp2p://", StringComparison.OrdinalIgnoreCase) ||
+            avatar.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            avatar.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return avatar;
+        if (avatar.StartsWith("/files/", StringComparison.Ordinal))
+            return "fluxp2p://" + avatar.TrimStart('/');
+        return string.IsNullOrEmpty(userId)
+            ? null
+            : $"https://cdn.discordapp.com/avatars/{userId}/{avatar}.png?size={size}";
+    }
 }
 
 public sealed class DiscordFriend
@@ -33,9 +45,7 @@ public sealed class DiscordFriend
     public string ActivityText = "";
     public int Type; // 1 = Friend, 3 = Incoming, 4 = Outgoing
 
-    public string? AvatarUrl => string.IsNullOrEmpty(Avatar) || string.IsNullOrEmpty(UserId)
-        ? null
-        : $"https://cdn.discordapp.com/avatars/{UserId}/{Avatar}.png?size=64";
+    public string? AvatarUrl => DiscordUser.ResolveAvatarUrl(UserId, Avatar, 64);
 }
 
 public readonly record struct ChannelOverwrite(string Id, int Type, ulong Allow, ulong Deny);
@@ -87,10 +97,12 @@ public sealed class DiscordChannel
         get
         {
             if (Type == 3 && !string.IsNullOrEmpty(ChannelIcon) && !string.IsNullOrEmpty(Id))
+            {
+                if (ChannelIcon.StartsWith("fluxp2p://", StringComparison.OrdinalIgnoreCase) || ChannelIcon.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                    return ChannelIcon;
                 return $"https://cdn.discordapp.com/channel-icons/{Id}/{ChannelIcon}.png?size=64";
-            if (!string.IsNullOrEmpty(RecipientAvatar) && !string.IsNullOrEmpty(RecipientId))
-                return $"https://cdn.discordapp.com/avatars/{RecipientId}/{RecipientAvatar}.png?size=64";
-            return null;
+            }
+            return DiscordUser.ResolveAvatarUrl(RecipientId, RecipientAvatar, 64);
         }
     }
 }
@@ -116,9 +128,7 @@ public sealed class VoiceMember
     public bool Speaking;
     public long SpeakingUntil;
 
-    public string? AvatarUrl => string.IsNullOrEmpty(Avatar) || string.IsNullOrEmpty(UserId)
-        ? null
-        : $"https://cdn.discordapp.com/avatars/{UserId}/{Avatar}.png?size=48";
+    public string? AvatarUrl => DiscordUser.ResolveAvatarUrl(UserId, Avatar, 64);
 }
 
 public sealed class DiscordAttachment
@@ -179,9 +189,7 @@ public sealed class DiscordMessage
 
     public bool IsSystemOrCall => MsgType != 0 && MsgType != 19 && MsgType != 20 && MsgType != 21;
 
-    public string? AvatarUrl => string.IsNullOrEmpty(AuthorAvatar) || string.IsNullOrEmpty(AuthorId)
-        ? null
-        : $"https://cdn.discordapp.com/avatars/{AuthorId}/{AuthorAvatar}.png?size=64";
+    public string? AvatarUrl => DiscordUser.ResolveAvatarUrl(AuthorId, AuthorAvatar, 64);
 
     public static string FormatRussianDate(DateTime localDt)
     {
