@@ -30,7 +30,10 @@ if ($st) {
 
 # Obtain GitHub token via Git Credential Manager (never printed!)
 $token = $null
-$credRaw = (cmd /c "(echo protocol=https& echo host=github.com& echo.) | git credential fill") -join "`n"
+$tmpCred = Join-Path $env:TEMP "fc_cred_in.txt"
+[System.IO.File]::WriteAllText($tmpCred, "protocol=https`nhost=github.com`n`n", [System.Text.Encoding]::ASCII)
+$credRaw = (cmd /c "git credential fill < `"$tmpCred`"") -join "`n"
+Remove-Item $tmpCred -Force -ErrorAction SilentlyContinue
 if ($credRaw -match "password=([^\r\n]+)") { $token = $Matches[1].Trim() }
 if ([string]::IsNullOrWhiteSpace($token)) { throw "No GitHub token found in Git Credential Manager" }
 
