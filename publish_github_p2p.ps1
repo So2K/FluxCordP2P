@@ -62,12 +62,16 @@ if (-not $repoExists) {
     Invoke-RestMethod -Uri "https://api.github.com/user/repos" -Headers $headers -Method Post -Body $body -ContentType "application/json" | Out-Null
 }
 
-$remoteUrl = git remote get-url origin 2>$null
-if (-not $remoteUrl) {
+$hasOrigin = (git remote) -contains "origin"
+if (-not $hasOrigin) {
     git remote add origin "https://github.com/$repo.git"
 }
-git push -u origin main --force
-if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+git push -u origin main --force 2>&1 | Out-Host
+$pushCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($pushCode -ne 0) { throw "git push failed" }
 
 # Create or update GitHub Release v2.1.0
 $tag = "v$ver"
