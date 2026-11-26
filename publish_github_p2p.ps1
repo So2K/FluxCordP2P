@@ -41,7 +41,7 @@ if ([string]::IsNullOrWhiteSpace($token)) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $proc.StandardInput.Write("protocol=https`nhost=github.com`n`n")
+    $proc.StandardInput.Write("protocol=https`nhost=github.com`nusername=So2K`n`n")
     $proc.StandardInput.Close()
     $credOut = $proc.StandardOutput.ReadToEnd() -split "`r?`n"
     $proc.WaitForExit()
