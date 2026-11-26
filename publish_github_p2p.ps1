@@ -30,17 +30,7 @@ if ($st) {
 
 # Obtain GitHub token via Git Credential Manager (never printed!)
 $token = $null
-$psi = New-Object System.Diagnostics.ProcessStartInfo("git", "credential fill")
-$psi.UseShellExecute = $false
-$psi.RedirectStandardInput = $true
-$psi.RedirectStandardOutput = $true
-$proc = [System.Diagnostics.Process]::Start($psi)
-$inBytes = [System.Text.Encoding]::ASCII.GetBytes("protocol=https`nhost=github.com`n`n")
-$proc.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length)
-$proc.StandardInput.BaseStream.Flush()
-$proc.StandardInput.Close()
-$credRaw = $proc.StandardOutput.ReadToEnd()
-$proc.WaitForExit()
+$credRaw = (cmd /c "(echo protocol=https& echo host=github.com& echo.) | git credential fill") -join "`n"
 if ($credRaw -match "password=([^\r\n]+)") { $token = $Matches[1].Trim() }
 if ([string]::IsNullOrWhiteSpace($token)) { throw "No GitHub token found in Git Credential Manager" }
 
