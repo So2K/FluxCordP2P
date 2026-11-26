@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- FluxCord: Ultra-fast native Discord client. .NET 10 NativeAOT + Win32 + Direct2D FlipDiscard + C++20 Zero-Copy NVENC/WASAPI media engine. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>FluxCord</RootNamespace>
+    <AssemblyName>FluxCordP2P</AssemblyName>
+    <Version>2.0.0</Version>
+    <FileVersion>2.0.0.0</FileVersion>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationIcon>Assets\fluxcord.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>$(NoWarn);CA1416;IL2026;IL3050</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="6" />
+    <RuntimeHostConfigurationOption Include="System.GC.RetainVM" Value="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.20" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Assets\fonts\lucide.ttf" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Assets\fonts\lucide.ttf')" />
+    <None Include="Assets\fluxcord.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Assets\fluxcord.png')" />
+    <None Include="Assets\fluxcord.ico" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Assets\fluxcord.ico')" />
+  </ItemGroup>
+</Project>

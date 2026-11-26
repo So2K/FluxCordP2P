@@ -1,0 +1,25 @@
+# Build artifacts
+bin/
+!native/third_party/libdave/bin/
+!native/third_party/libdave/bin/libdave.dll
+obj/
+dist/
+room.secret
+p2p_preset.json
+native/build/
+native/out/
+*.pdb
+*.old
+*.bak
+*.zip
+*.log
+*.tmp
+deploy_verify.cmd
+native/build_run.cmd
+
+# User secrets & caches
+settings.json
+cache.db*
+.vs/
+.vscode/
+.idea/
