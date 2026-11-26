@@ -8,4 +8,5 @@ p2p_preset.json
 *.log
 *.bak
 *.old*
+*.obj
 verify_media_gpu.py

@@ -30,11 +30,21 @@ if ($st) {
 
 # Obtain GitHub token via gh or git credential manager (never printed!)
 $token = $null
-if (Get-Command gh -ErrorAction SilentlyContinue) {
-    $token = (gh auth token 2>$null)
+$ghExe = if (Get-Command gh -ErrorAction SilentlyContinue) { "gh" } elseif (Test-Path "C:\Program Files\GitHub CLI\gh.exe") { "C:\Program Files\GitHub CLI\gh.exe" } else { $null }
+if ($ghExe) {
+    $token = (& $ghExe auth token 2>$null)
 }
 if ([string]::IsNullOrWhiteSpace($token)) {
-    $credOut = "protocol=https`nhost=github.com`n`n" | git credential fill
+    $psi = New-Object System.Diagnostics.ProcessStartInfo("git", "credential fill")
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Write("protocol=https`nhost=github.com`n`n")
+    $proc.StandardInput.Close()
+    $credOut = $proc.StandardOutput.ReadToEnd() -split "`r?`n"
+    $proc.WaitForExit()
     foreach ($line in $credOut) {
         if ($line -match '^password=(.+)$') { $token = $Matches[1].Trim() }
     }
