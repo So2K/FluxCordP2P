@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $root = 'C:\Users\User\Projects\FluxCordP2P'
-$ver = '2.2.0'
+$ver = '2.3.0'
 $repo = 'So2K/FluxCordP2P'
 $cleanZip = "$root\dist\FluxCordP2P-$ver-win-x64.zip"
 $setupExe = "$root\dist\FluxCordP2P-Setup.exe"
@@ -25,7 +25,7 @@ $leaked = git diff --cached --name-only | Where-Object { $_ -match 'room\.secret
 if ($leaked) { throw "ABORT: secret file staged: $leaked" }
 
 if ($st) {
-    git commit -m "Release v${ver}: P2P Stream Decode, Dual-Screen BGRA, Avatars, Dynamic Tray & Setup.exe"
+    git commit -m "Release v${ver}: Inline Markdown, OG Embeds, History Pagination, Game Overlay v3, Soundboard, Rebindable Keybinds, Themes & PiP"
 }
 
 # Obtain GitHub token via Git Credential Manager (never printed!)
@@ -76,15 +76,18 @@ if ($pushCode -ne 0) { throw "git push failed" }
 # Create or update GitHub Release v2.1.0
 $tag = "v$ver"
 $relBody = @"
-## FluxCord P2P v$ver (Jetson Orin Edition)
+## FluxCord P2P v$ver (Full Discord Feature Pack • Public & Private P2P)
 
 ### Что нового в v${ver}:
-- **Глобальные хоткеи в играх** — ``Ctrl+Shift+M`` (мут микрофона) и ``Ctrl+Shift+D`` (дефен) работают поверх любой полноэкранной игры и при свёрнутом окне!
-- **Автозапуск с Windows + старт в трее** — переключатели прямо в Настройках → «Интерфейс и сеть» (`--minimized`).
-- **Сохранение громкости друзей** — индивидуальная громкость каждого участника теперь запоминается в `settings.json`.
-- **Закрепление сообщений (`📌`) и создание каналов** — кнопка `📌` на любом сообщении синхронизируется через Jetson, плюс команды `/channel Имя` и `/voice Имя`.
-- **Умное открытие файлов и уведомления** — скачивание и открытие файлов `fluxp2p://` с Jetson в 1 клик, плюс подсветка окна в таскбаре и звук при сообщениях в фоне.
-- **Обновлённая панель настроек P2P** — живой масштаб интерфейса (`80–140%`), копирование ссылки комнаты и переключение Direct P2P / Jetson Relay.
+- **Полноценный Inline Markdown (DirectWrite AST)** — ``**жирный**``, ``*курсив*``, ``~~зачёркнутый~~``, `` `код` ``, кликабельные ``||спойлеры||``, ``[текст](ссылка)``, авто-ссылки и ``@упоминания``.
+- **OpenGraph-превью ссылок + подгрузка истории (>80 сообщений)** — сервер на Jetson Orin автоматически подгружает заголовки/описания/картинки сайтов (SSRF-safe) и отдаёт старые страницы истории чата при прокрутке вверх.
+- **Игровой оверлей (Overlay v3 style)** — прозрачное click-through `TopMost` окно поверх любых игр (0% DLL-инжекта, безопасно для любых античитов) с индикаторами говорящих, статусом стрима/мута, выбором 4 углов экрана и хоткеем `Ctrl+Shift+O`.
+- **Soundboard (синхронный на всю комнату)** — 8 встроенных звуков (`Airhorn`, `Vine Boom`, `Ba-Dum-Tss`, `Bruh`, `Quack`, `Oof`, `Wow`, `GG EZ`) с кнопкой `🎺` в панели голоса, регулировкой громкости и баннером в игровом оверлее.
+- **Переназначаемые глобальные хоткеи + двухцветная шкала VAD** — переназначение клавиш Мута, Дефена и Оверлея в 1 клик в Настройках + интерактивная двухцветная полоска чувствительности микрофона (как в Discord).
+- **Живые темы (`Obsidian`, `Onyx OLED`, `Discord Ash`, `Midnight`), PiP-окно стрима в чате, Windows Toast-уведомления и Режим стримера**.
+
+### Установка (публичная чистая сборка без приватных ключей):
+- Скачайте ``FluxCordP2P-Setup.exe`` (установщик Windows) или ``FluxCordP2P-$ver-win-x64.zip`` (portable / автообновление).
 
 ### Контрольные суммы (SHA-256):
 - ``FluxCordP2P-$ver-win-x64.zip``: ``$zipHash``

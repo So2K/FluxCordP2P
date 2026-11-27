@@ -906,7 +906,14 @@ public sealed class DiscordClient
                             if (m.ChannelId != ActiveChannelId || unfocused)
                                 SoundFx.Play(UiSound.Message);
                             if (unfocused && App.Hwnd != 0)
-                                App.InvokeOnUiThread(() => W.FlashWindow(App.Hwnd, true));
+                            {
+                                App.InvokeOnUiThread(() =>
+                                {
+                                    W.FlashWindow(App.Hwnd, true);
+                                    if (SettingsStore.Current.DesktopNotifications && !SettingsStore.Current.StreamerMode)
+                                        App.ShowTrayBalloon(m.AuthorName, string.IsNullOrEmpty(m.Content) ? "📎 Вложение" : m.Content);
+                                });
+                            }
                         }
                         Notify();
                     }
@@ -1045,6 +1052,45 @@ public sealed class DiscordClient
                         try { data = Convert.FromBase64String(b64.GetString()!); } catch { }
                     }
                     if (_pendingFileFetches.TryRemove(path, out var tcs)) tcs.TrySetResult(data);
+                    break;
+                }
+
+                case "history_page":
+                {
+                    string cid = root.TryGetProperty("channel_id", out var ce) ? ce.GetString() ?? "" : "";
+                    bool hasMore = root.TryGetProperty("has_more", out var hm) && hm.ValueKind == JsonValueKind.True;
+                    if (!hasMore && !string.IsNullOrEmpty(cid)) _historyExhausted[cid] = true;
+                    if (!string.IsNullOrEmpty(cid) && root.TryGetProperty("messages", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                    {
+                        var older = new List<DiscordMessage>();
+                        foreach (var el in arr.EnumerateArray()) older.Add(ParseMessageDto(el));
+                        if (older.Count > 0)
+                        {
+                            var list = Messages.GetOrAdd(cid, _ => []);
+                            lock (list)
+                            {
+                                var existing = new HashSet<string>(list.Select(x => x.Id));
+                                var toInsert = older.Where(x => !existing.Contains(x.Id)).ToList();
+                                if (toInsert.Count > 0) list.InsertRange(0, toInsert);
+                            }
+                            Notify();
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(cid)) _historyLoading.TryRemove(cid, out _);
+                    break;
+                }
+
+                case "soundboard":
+                {
+                    string sid = root.TryGetProperty("sound_id", out var se) ? se.GetString() ?? "" : "";
+                    string author = root.TryGetProperty("author_name", out var ae) ? ae.GetString() ?? "" : "";
+                    string lbl = root.TryGetProperty("label", out var le) ? le.GetString() ?? sid : sid;
+                    if (!string.IsNullOrEmpty(sid))
+                    {
+                        SoundFx.PlaySoundboard(sid);
+                        SoundboardPlayed?.Invoke(author, lbl);
+                        Notify();
+                    }
                     break;
                 }
             }
@@ -1378,6 +1424,27 @@ public sealed class DiscordClient
                     });
                 }
             }
+        }
+
+        if (m.TryGetProperty("embeds", out var embedsEl) && embedsEl.ValueKind == JsonValueKind.Array)
+        {
+            var elist = new List<DiscordEmbed>();
+            foreach (var eb in embedsEl.EnumerateArray())
+            {
+                var de = new DiscordEmbed
+                {
+                    Title = eb.TryGetProperty("title", out var et) ? et.GetString() ?? "" : "",
+                    Description = eb.TryGetProperty("description", out var edesc) ? edesc.GetString() ?? "" : "",
+                    Url = eb.TryGetProperty("url", out var eu) ? eu.GetString() ?? "" : "",
+                    Author = eb.TryGetProperty("author", out var ea) ? ea.GetString() ?? "" : "",
+                    Footer = eb.TryGetProperty("footer", out var ef) ? ef.GetString() ?? "" : "",
+                    ImageUrl = eb.TryGetProperty("image_url", out var ei) ? ei.GetString() ?? "" : "",
+                    Color = eb.TryGetProperty("color", out var ec) && ec.ValueKind == JsonValueKind.Number && ec.GetUInt32() != 0 ? ec.GetUInt32() : 0xFF5865F2
+                };
+                if (!string.IsNullOrEmpty(de.Title) || !string.IsNullOrEmpty(de.Description) || !string.IsNullOrEmpty(de.ImageUrl))
+                    elist.Add(de);
+            }
+            if (elist.Count > 0) msg.Embeds = [.. elist];
         }
 
         if (m.TryGetProperty("reactions", out var reacts) && reacts.ValueKind == JsonValueKind.Array)
@@ -1927,7 +1994,38 @@ public sealed class DiscordClient
         return Task.CompletedTask;
     }
 
-    public Task LoadOlderMessagesAsync(string channelId) => Task.CompletedTask;
+    private readonly ConcurrentDictionary<string, bool> _historyExhausted = new();
+    private readonly ConcurrentDictionary<string, long> _historyLoading = new();
+    public event Action<string, string>? SoundboardPlayed;
+
+    public async Task LoadOlderMessagesAsync(string channelId)
+    {
+        if (string.IsNullOrEmpty(channelId) || _historyExhausted.ContainsKey(channelId)) return;
+        long now = Environment.TickCount64;
+        if (_historyLoading.TryGetValue(channelId, out long ts) && now - ts < 3000) return;
+        string beforeId = "";
+        if (Messages.TryGetValue(channelId, out var list))
+        {
+            lock (list) { if (list.Count > 0) beforeId = list[0].Id; }
+        }
+        if (string.IsNullOrEmpty(beforeId)) return;
+        _historyLoading[channelId] = now;
+        await SendRpcAsync(w =>
+        {
+            w.WriteString("op", "load_older");
+            w.WriteString("channel_id", channelId);
+            w.WriteString("before_id", beforeId);
+            w.WriteNumber("limit", 50);
+        });
+    }
+
+    public Task PlaySoundboardAsync(string soundId, string label)
+        => SendRpcAsync(w =>
+        {
+            w.WriteString("op", "soundboard");
+            w.WriteString("sound_id", soundId);
+            w.WriteString("label", label);
+        });
 
     private void RefreshPinnedCache(string channelId)
     {

@@ -799,9 +799,8 @@ public static unsafe partial class Shell
 
             (int Mode, string Label, string Sub)[] modes =
             [
-                ((int)NoiseMode.AutoBest, "Auto Best (Максимум)", "Автовыбор лучшего нейросетевого движка"),
-                ((int)NoiseMode.DeepFilterNet3, "Изоляция голоса — DeepFilter / MMSE-LSA + KeyKill", "Чистый COLA STFT без металлических артефактов"),
-                ((int)NoiseMode.NvidiaBroadcast, "NVIDIA Broadcast AFX (RTX Tensor)", "Аппаратное шумоподавление RTX 4070 Ti"),
+                ((int)NoiseMode.AutoBest, "Auto Best — COLA STFT MMSE-LSA + KeyKill", "Автовыбор максимального шумоподавления без металлики"),
+                ((int)NoiseMode.DeepFilterNet3, "Изоляция голоса — COLA STFT + KeyKill", "Подавление клавиатуры, кулеров и фонового шума"),
                 ((int)NoiseMode.Rnnoise, "RNNoise Neural (Ультралёгкий)", "Минимальная задержка и <0.5% CPU"),
                 ((int)NoiseMode.StudioDsp, "Студия — Studio DSP (HPF 80Hz + Gate + AGC)", "Открытый чистый микрофон для студийных USB-микрофонов"),
                 ((int)NoiseMode.Off, "Выкл (Bypass)", "Без обработки сигнала")
@@ -820,10 +819,38 @@ public static unsafe partial class Shell
             }
             y += 8;
 
+            // Discord-style Two-Tone Interactive VAD Sensitivity Bar (Orange below GateDb, Bright Green above GateDb!)
+            Gfx.DrawText($"ЧУВСТВИТЕЛЬНОСТЬ ВВОДА (VAD ПОРОГ: {s.GateDb:F0} dB)", new R(px, y, pw, 16), 11, Th.Sub, 700);
+            y += 20;
+            var vadTrack = new R(px, y + 6, pw, 12);
+            float gateNorm = Math.Clamp((s.GateDb - (-75f)) / 60f, 0f, 1f);
+            float splitX = vadTrack.X + vadTrack.W * gateNorm;
+            float liveDb = 20f * MathF.Log10(MathF.Max(_audioStats.RawRms, 1e-5f));
+            float liveNorm = Math.Clamp((liveDb - (-75f)) / 60f, 0f, 1f);
+            float liveW = vadTrack.W * liveNorm;
+            Gfx.FillRect(new R(vadTrack.X, vadTrack.Y, MathF.Max(0, splitX - vadTrack.X), vadTrack.H), 0x44F59E0B, 6);
+            Gfx.FillRect(new R(splitX, vadTrack.Y, MathF.Max(0, vadTrack.Right - splitX), vadTrack.H), 0x4423A55A, 6);
+            if (liveW > 1f)
+            {
+                float orangeW = MathF.Min(liveW, splitX - vadTrack.X);
+                if (orangeW > 0.5f) Gfx.FillRect(new R(vadTrack.X, vadTrack.Y, orangeW, vadTrack.H), Th.Amber, 6);
+                if (liveW > splitX - vadTrack.X)
+                    Gfx.FillRect(new R(splitX, vadTrack.Y, liveW - (splitX - vadTrack.X), vadTrack.H), Th.Green, 6);
+            }
+            Gfx.FillRect(new R(splitX - 3f, vadTrack.Y - 4f, 6f, vadTrack.H + 8f), 0xFFFFFFFF, 3);
+            var vadHit = new R(vadTrack.X - 4, vadTrack.Y - 6, vadTrack.W + 8, vadTrack.H + 12);
+            if (UI.Hover(vadHit) && UI.Down)
+            {
+                float nt = Math.Clamp((UI.MX - vadTrack.X) / MathF.Max(1f, vadTrack.W), 0f, 1f);
+                s.GateDb = -75f + nt * 60f;
+                changed = true;
+            }
+            y += 30;
+
             float str = s.NoiseStrength;
             if (UI.Slider(UI.Id("sl_str"), new R(px, y, halfW, 38), "Сила шумоподавления", ref str, 0f, 1f)) { s.NoiseStrength = str; changed = true; }
             float gate = s.GateDb;
-            if (UI.Slider(UI.Id("sl_gate"), new R(px + halfW + 16, y, halfW, 38), "Чувствительность ввода (Gate)", ref gate, -70f, -15f, " dB")) { s.GateDb = gate; changed = true; }
+            if (UI.Slider(UI.Id("sl_gate"), new R(px + halfW + 16, y, halfW, 38), "Порог голоса (Gate)", ref gate, -75f, -15f, " dB")) { s.GateDb = gate; changed = true; }
             y += 46;
 
             if (UI.Toggle(UI.Id("tg_hpf"), new R(px, y, pw, 30), "High-Pass 80 Hz (убирает гул стола и вентиляторов)", s.HpfEnabled)) { s.HpfEnabled = !s.HpfEnabled; changed = true; }
@@ -900,12 +927,76 @@ public static unsafe partial class Shell
 
             Gfx.FillRect(new R(px, y, pw, 1), Th.Border);
             y += 14;
-            Gfx.DrawText("WINDOWS, ГЛОБАЛЬНЫЕ ХОТКЕИ И МАСШТАБ", new R(px, y, pw, 18), 12, Th.Cyan, 700);
+            Gfx.DrawText("ТЕМЫ ОФОРМЛЕНИЯ (DISCORD 2026) И РЕЖИМЫ", new R(px, y, pw, 18), 12, Th.Cyan, 700);
             y += 24;
 
-            if (UI.Toggle(UI.Id("tg_ghk"), new R(px, y, pw, 32), "Глобальные хоткеи в играх (Ctrl+Shift+M — мик, Ctrl+Shift+D — дефен)", s.GlobalHotkeys))
+            (string Id, string Name)[] themes = [("Obsidian", "Obsidian"), ("Onyx", "Onyx OLED"), ("Ash", "Discord Ash"), ("Midnight", "Midnight")];
+            float tw = (pw - 18f) / 4f;
+            for (int ti = 0; ti < themes.Length; ti++)
+            {
+                bool sel = string.Equals(s.Theme, themes[ti].Id, StringComparison.OrdinalIgnoreCase);
+                if (UI.Button(UI.Id("th_btn", ti), new R(px + ti * (tw + 6f), y, tw, 32), themes[ti].Name, sel ? Th.Brand : Th.Card, sel ? 0xFFFFFFFF : Th.Text, 6, 12))
+                {
+                    s.Theme = themes[ti].Id;
+                    Th.ApplyTheme(s.Theme);
+                    changed = true;
+                }
+            }
+            y += 42;
+
+            if (UI.Toggle(UI.Id("tg_notif"), new R(px, y, pw, 30), "Уведомления Windows (Toast-баблы) о новых сообщениях в фоне", s.DesktopNotifications))
+            { s.DesktopNotifications = !s.DesktopNotifications; changed = true; }
+            y += 34;
+            if (UI.Toggle(UI.Id("tg_strmode"), new R(px, y, pw, 30), "Режим стримера (отключает звуки, уведомления и оверлей)", s.StreamerMode))
+            { s.StreamerMode = !s.StreamerMode; changed = true; GameOverlay.Tick(); }
+            y += 34;
+            if (UI.Toggle(UI.Id("tg_pip"), new R(px, y, pw, 30), "Мини-окно стрима (PiP) поверх текстового чата", s.ShowPiPInChat))
+            { s.ShowPiPInChat = !s.ShowPiPInChat; changed = true; }
+            y += 40;
+
+            Gfx.FillRect(new R(px, y, pw, 1), Th.Border);
+            y += 14;
+            Gfx.DrawText("🎮 ИГРОВОЙ ОВЕРЛЕЙ (OVERLAY V3 — БЕЗ ИНЖЕКТА И АНТИЧИТ-РИСКА)", new R(px, y, pw, 18), 11.5f, Th.Green, 700);
+            y += 24;
+            if (UI.Toggle(UI.Id("tg_ovl"), new R(px, y, pw, 30), "Показывать прозрачный click-through оверлей говорящих поверх игр", s.GameOverlayEnabled))
+            { s.GameOverlayEnabled = !s.GameOverlayEnabled; changed = true; GameOverlay.Tick(); }
+            y += 36;
+            string[] corners = ["↖ Верх-Лево", "↗ Верх-Право", "↙ Низ-Лево", "↘ Низ-Право"];
+            for (int ci = 0; ci < 4; ci++)
+            {
+                bool sel = s.GameOverlayPos == ci;
+                if (UI.Button(UI.Id("ovl_pos", ci), new R(px + ci * (tw + 6f), y, tw, 28), corners[ci], sel ? Th.Brand : Th.Card, sel ? 0xFFFFFFFF : Th.Sub, 6, 11.5f))
+                { s.GameOverlayPos = ci; changed = true; GameOverlay.Tick(); }
+            }
+            y += 40;
+
+            Gfx.FillRect(new R(px, y, pw, 1), Th.Border);
+            y += 14;
+            Gfx.DrawText("WINDOWS, ГЛОБАЛЬНЫЕ ХОТКЕИ (ПЕРЕНАЗНАЧЕНИЕ) И МАСШТАБ", new R(px, y, pw, 18), 12, Th.Cyan, 700);
+            y += 24;
+
+            if (UI.Toggle(UI.Id("tg_ghk"), new R(px, y, pw, 32), "Глобальные хоткеи в играх (работают даже в полноэкранных играх)", s.GlobalHotkeys))
             { s.GlobalHotkeys = !s.GlobalHotkeys; changed = true; App.SyncGlobalHotkeys(); }
             y += 36;
+
+            // Interactive Keybind Rebind Rows (Mute, Deafen, Overlay)
+            (int Slot, string Title, uint Mod, uint Vk)[] binds =
+            [
+                (1, "Вкл/Выкл микрофон", s.HotkeyMuteMod, s.HotkeyMuteVk),
+                (2, "Вкл/Выкл звук (Deafen)", s.HotkeyDeafenMod, s.HotkeyDeafenVk),
+                (3, "Вкл/Выкл игровой оверлей", s.HotkeyOverlayMod, s.HotkeyOverlayVk)
+            ];
+            for (int bi = 0; bi < binds.Length; bi++)
+            {
+                var b = binds[bi];
+                bool cap = App.CapturingHotkeySlot == b.Slot;
+                Gfx.DrawText(b.Title, new R(px + 6, y + 6, pw - 190, 18), 12.5f, Th.Text, 500);
+                string btnTxt = cap ? "Нажмите клавишу..." : W.FormatHotkey(b.Mod, b.Vk);
+                if (UI.Button(UI.Id("hk_bind", b.Slot), new R(px + pw - 176, y, 176, 28), btnTxt, cap ? Th.Amber : Th.Card, cap ? 0xFF0A0B0E : Th.Cyan, 6, 12, 700))
+                    App.CapturingHotkeySlot = cap ? 0 : b.Slot;
+                y += 34;
+            }
+            y += 6;
             if (UI.Toggle(UI.Id("tg_winrun"), new R(px, y, pw, 32), "Запускать FluxCord P2P автоматически вместе с Windows", s.LaunchWithWindows))
             { s.LaunchWithWindows = !s.LaunchWithWindows; changed = true; W.SetWindowsAutostart(s.LaunchWithWindows, s.StartMinimized); }
             y += 36;
@@ -1043,6 +1134,46 @@ public static unsafe partial class Shell
     }
 
     // ---------------- 7. Exact Discord Voice Connection Info + Live Ping Graph + RTC Turbo Region Switcher (c_026.jpg!) ----------------
+
+    private static void DrawSoundboardPopup()
+    {
+        var dc = DiscordClient.Instance;
+        var s = SettingsStore.Current;
+        float w = 316, h = 228;
+        float x = Math.Clamp(RailW + 8, 8, Gfx.W - w - 8);
+        float y = Math.Clamp(Gfx.H - 166 - h, TopH + 8, Gfx.H - h - 68);
+        var pop = new R(x, y, w, h);
+        _overlayCutouts.Add(pop);
+
+        if ((UI.Pressed || UI.RightClicked) && !pop.Contains(UI.MX, UI.MY))
+        { _showSoundboard = false; return; }
+
+        Gfx.FillRect(pop, 0xFA14151B, 12);
+        Gfx.StrokeRect(pop, Th.Border, 1, 12);
+        Gfx.DrawText("🎺 Soundboard (синхр. на всю комнату)", new R(pop.X + 12, pop.Y + 10, pop.W - 24, 18), 12.5f, Th.Text, 700);
+        Gfx.FillRect(new R(pop.X + 10, pop.Y + 34, pop.W - 20, 1), Th.Border);
+
+        var clips = SoundFx.SoundboardClips;
+        float padW = (pop.W - 36f) / 2f;
+        float py = pop.Y + 42f;
+        for (int i = 0; i < clips.Length; i++)
+        {
+            int col = i % 2, row = i / 2;
+            var pr = new R(pop.X + 12 + col * (padW + 12), py + row * 34f, padW, 28f);
+            if (UI.Button(UI.Id("sb_pad", i), pr, $"{clips[i].Emoji} {clips[i].Label}", Th.Card, Th.Text, 6, 12f, 600))
+            {
+                _ = dc.PlaySoundboardAsync(clips[i].Id, clips[i].Label);
+                if (!dc.IsConnected) SoundFx.PlaySoundboard(clips[i].Id);
+            }
+        }
+
+        float sbPct = s.SoundboardVolume * 100f;
+        if (UI.Slider(UI.Id("sb_vol"), new R(pop.X + 12, pop.Bottom - 44, pop.W - 24, 36), "Громкость Soundboard", ref sbPct, 0f, 100f, "%"))
+        {
+            s.SoundboardVolume = sbPct / 100f;
+            SettingsStore.Save();
+        }
+    }
 
     private static void DrawVoiceInfoPopup()
     {

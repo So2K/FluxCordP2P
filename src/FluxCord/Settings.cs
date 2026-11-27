@@ -16,13 +16,17 @@ public sealed class FluxSettings
     // Migrated from Dorion / Discord
     public bool PushToTalk { get; set; }
     public string PushToTalkKey { get; set; } = "RControl";
-    public bool DesktopNotifications { get; set; }
+    public bool DesktopNotifications { get; set; } = true;
     public bool StreamerMode { get; set; }
     public bool UnreadBadge { get; set; } = true;
     public bool HardwareAccel { get; set; } = true;
     public bool UiSoundsEnabled { get; set; } = true;
     public float UiSoundsVolume { get; set; } = 0.75f;
+    public float SoundboardVolume { get; set; } = 0.80f;
     public bool ShowMemberList { get; set; } = true;
+    public bool GameOverlayEnabled { get; set; } = true;
+    public int GameOverlayPos { get; set; } = 0; // 0=TopLeft, 1=TopRight, 2=BottomLeft, 3=BottomRight
+    public bool ShowPiPInChat { get; set; } = true;
     public string PresenceStatus { get; set; } = "online"; // online, idle, dnd, invisible
     public string PreferredRtcRegion { get; set; } = ""; // empty = Auto-Fastest benchmarked region
     public bool TurboLowLatency { get; set; } = true;
@@ -33,6 +37,12 @@ public sealed class FluxSettings
     public bool LaunchWithWindows { get; set; }
     public bool StartMinimized { get; set; }
     public bool GlobalHotkeys { get; set; } = true;
+    public uint HotkeyMuteMod { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
+    public uint HotkeyMuteVk { get; set; } = 0x4D;            // M
+    public uint HotkeyDeafenMod { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
+    public uint HotkeyDeafenVk { get; set; } = 0x44;          // D
+    public uint HotkeyOverlayMod { get; set; } = 0x0002 | 0x0004; // Ctrl+Shift
+    public uint HotkeyOverlayVk { get; set; } = 0x4F;         // O
     public Dictionary<string, float> UserVolumes { get; set; } = new();
 
     // P2P + Jetson Orin Nano Identity & Room Config
@@ -176,6 +186,7 @@ public static class SettingsStore
                 Current.AutoDownloadUpdates = true;
             }
             Current.MigratedFromDorion = true;
+            Th.ApplyTheme(Current.Theme);
             SaveLocked();
         }
     }

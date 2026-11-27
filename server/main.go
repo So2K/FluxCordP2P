@@ -16,12 +16,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -61,6 +64,16 @@ type AttachmentDto struct {
 	ContentType string `json:"content_type"`
 }
 
+type EmbedDto struct {
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Url         string `json:"url,omitempty"`
+	Author      string `json:"author,omitempty"`
+	Footer      string `json:"footer,omitempty"`
+	ImageUrl    string `json:"image_url,omitempty"`
+	Color       uint32 `json:"color,omitempty"`
+}
+
 type MessageDto struct {
 	Id          string          `json:"id"`
 	ChannelId   string          `json:"channel_id"`
@@ -79,6 +92,7 @@ type MessageDto struct {
 	ReplyAuthor string          `json:"reply_author,omitempty"`
 	ReplyText   string          `json:"reply_text,omitempty"`
 	Attachments []AttachmentDto `json:"attachments,omitempty"`
+	Embeds      []EmbedDto      `json:"embeds,omitempty"`
 	Reactions   []ReactionDto   `json:"reactions,omitempty"`
 }
 
@@ -1007,6 +1021,9 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 		h.mu.Unlock()
 		h.markDirty()
 		h.broadcastAll(map[string]interface{}{"op": "msg_create", "message": msg})
+		if firstUrl := extractFirstHttpUrl(content); firstUrl != "" {
+			go h.fetchAndAttachOgEmbed(cid, msg.Id, firstUrl)
+		}
 
 	case "edit_msg":
 		cid, _ := req["channel_id"].(string)
@@ -1190,6 +1207,62 @@ func (h *Hub) handleRpc(p *PeerSession, raw []byte, isLanClient bool) {
 			"path":     reqPath,
 			"ok":       true,
 			"data_b64": base64.StdEncoding.EncodeToString(rawBytes),
+		})
+
+	case "load_older":
+		cid, _ := req["channel_id"].(string)
+		beforeId, _ := req["before_id"].(string)
+		limitF, _ := req["limit"].(float64)
+		limit := int(limitF)
+		if limit <= 0 || limit > 100 {
+			limit = 50
+		}
+		if cid == "" {
+			return
+		}
+		h.mu.RLock()
+		list := h.state.Messages[cid]
+		endIdx := len(list)
+		if beforeId != "" {
+			for i := len(list) - 1; i >= 0; i-- {
+				if list[i].Id == beforeId {
+					endIdx = i
+					break
+				}
+			}
+		}
+		startIdx := endIdx - limit
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		page := append([]MessageDto(nil), list[startIdx:endIdx]...)
+		hasMore := startIdx > 0
+		h.mu.RUnlock()
+		h.sendToPeer(p, map[string]interface{}{
+			"op":         "history_page",
+			"channel_id": cid,
+			"messages":   page,
+			"has_more":   hasMore,
+		})
+
+	case "soundboard":
+		if p.UserId == "" {
+			return
+		}
+		sid, _ := req["sound_id"].(string)
+		lbl, _ := req["label"].(string)
+		surl, _ := req["url"].(string)
+		if sid == "" && surl == "" {
+			return
+		}
+		h.broadcastAll(map[string]interface{}{
+			"op":          "soundboard",
+			"user_id":     p.UserId,
+			"author_name": p.DisplayName,
+			"channel_id":  p.VoiceChannelId,
+			"sound_id":    sid,
+			"label":       lbl,
+			"url":         surl,
 		})
 
 	case "create_channel":
@@ -2022,6 +2095,144 @@ func (h *Hub) handleRendezvousPacket(cipherPayload []byte) {
 		h.handleRpc(p, b, false)
 	} else {
 		h.handleRpc(p, plain, false)
+	}
+}
+
+var (
+	reHttpUrl   = regexp.MustCompile(`https?://[^\s<>"]+`)
+	reMetaTag   = regexp.MustCompile(`(?is)<meta\s+[^>]+>`)
+	reTitleTag  = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	reAttrProp  = regexp.MustCompile(`(?is)(?:property|name)\s*=\s*["']([^"']+)["']`)
+	reAttrCont  = regexp.MustCompile(`(?is)content\s*=\s*["']([^"']+)["']`)
+)
+
+func extractFirstHttpUrl(s string) string {
+	m := reHttpUrl.FindString(s)
+	return strings.TrimRight(m, ".,!?;:)]}")
+}
+
+func isPrivateHost(host string) bool {
+	h := host
+	if idx := strings.IndexByte(h, ':'); idx >= 0 {
+		h = h[:idx]
+	}
+	low := strings.ToLower(h)
+	if low == "localhost" || strings.HasSuffix(low, ".local") {
+		return true
+	}
+	ips, err := net.LookupIP(h)
+	if err != nil || len(ips) == 0 {
+		return true
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) fetchAndAttachOgEmbed(cid, msgId, rawUrl string) {
+	u, err := url.Parse(rawUrl)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return
+	}
+	if isPrivateHost(u.Host) {
+		return
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequest("GET", rawUrl, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; FluxCordP2P/2.3; +https://github.com/So2K/FluxCordP2P)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(ct, "text/html") && !strings.Contains(ct, "xhtml") {
+		return
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil || len(bodyBytes) == 0 {
+		return
+	}
+	doc := string(bodyBytes)
+	var ogTitle, ogDesc, ogImg, ogSite string
+	for _, tag := range reMetaTag.FindAllString(doc, 80) {
+		pm := reAttrProp.FindStringSubmatch(tag)
+		cm := reAttrCont.FindStringSubmatch(tag)
+		if len(pm) < 2 || len(cm) < 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(pm[1]))
+		val := strings.TrimSpace(html.UnescapeString(cm[1]))
+		switch key {
+		case "og:title", "twitter:title":
+			if ogTitle == "" {
+				ogTitle = val
+			}
+		case "og:description", "twitter:description", "description":
+			if ogDesc == "" {
+				ogDesc = val
+			}
+		case "og:image", "twitter:image":
+			if ogImg == "" && (strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://")) {
+				ogImg = val
+			}
+		case "og:site_name":
+			if ogSite == "" {
+				ogSite = val
+			}
+		}
+	}
+	if ogTitle == "" {
+		if tm := reTitleTag.FindStringSubmatch(doc); len(tm) >= 2 {
+			ogTitle = strings.TrimSpace(html.UnescapeString(tm[1]))
+		}
+	}
+	if ogTitle == "" && ogDesc == "" && ogImg == "" {
+		return
+	}
+	if len(ogTitle) > 140 {
+		ogTitle = ogTitle[:140] + "…"
+	}
+	if len(ogDesc) > 260 {
+		ogDesc = ogDesc[:260] + "…"
+	}
+	if ogSite == "" {
+		ogSite = u.Host
+	}
+	emb := EmbedDto{
+		Title:       ogTitle,
+		Description: ogDesc,
+		Url:         rawUrl,
+		Author:      ogSite,
+		ImageUrl:    ogImg,
+		Color:       0xFF5865F2,
+	}
+
+	var updated *MessageDto
+	h.mu.Lock()
+	list := h.state.Messages[cid]
+	for i := range list {
+		if list[i].Id == msgId {
+			list[i].Embeds = []EmbedDto{emb}
+			cp := list[i]
+			updated = &cp
+			break
+		}
+	}
+	h.mu.Unlock()
+	if updated != nil {
+		h.markDirty()
+		h.broadcastAll(map[string]interface{}{"op": "msg_update", "message": updated})
 	}
 }
 

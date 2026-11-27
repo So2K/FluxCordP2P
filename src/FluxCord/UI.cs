@@ -2,23 +2,78 @@ namespace FluxCord;
 
 public static class Th
 {
-    public const uint Bg = 0xFF0C0D10;
-    public const uint Rail = 0xFF090A0D;
-    public const uint Sidebar = 0xFF121318;
-    public const uint Panel = 0xFF171920;
-    public const uint Card = 0xFF1D2029;
-    public const uint Hover = 0x16FFFFFF;
-    public const uint Active = 0x24FFFFFF;
-    public const uint Border = 0x18FFFFFF;
-    public const uint Text = 0xFFF3F4F6;
-    public const uint Sub = 0xFF9CA3AF;
-    public const uint Dim = 0xFF6B7280;
-    public const uint Brand = 0xFF5865F2;
-    public const uint BrandHover = 0xFF6E79F7;
-    public const uint Green = 0xFF23A55A;
-    public const uint Red = 0xFFED4245;
-    public const uint Amber = 0xFFF59E0B;
-    public const uint Cyan = 0xFF38BDF8;
+    public static uint Bg = 0xFF0C0D10;
+    public static uint Rail = 0xFF090A0D;
+    public static uint Sidebar = 0xFF121318;
+    public static uint Panel = 0xFF171920;
+    public static uint Card = 0xFF1D2029;
+    public static uint Hover = 0x16FFFFFF;
+    public static uint Active = 0x24FFFFFF;
+    public static uint Border = 0x18FFFFFF;
+    public static uint Text = 0xFFF3F4F6;
+    public static uint Sub = 0xFF9CA3AF;
+    public static uint Dim = 0xFF6B7280;
+    public static uint Brand = 0xFF5865F2;
+    public static uint BrandHover = 0xFF6E79F7;
+    public static uint Green = 0xFF23A55A;
+    public static uint Red = 0xFFED4245;
+    public static uint Amber = 0xFFF59E0B;
+    public static uint Cyan = 0xFF38BDF8;
+
+    public static void ApplyTheme(string? name)
+    {
+        switch ((name ?? "Obsidian").Trim())
+        {
+            case "Onyx": // Pure OLED Discord Onyx
+                Bg = 0xFF050507;
+                Rail = 0xFF020203;
+                Sidebar = 0xFF0A0A0E;
+                Panel = 0xFF0E0F14;
+                Card = 0xFF15171F;
+                Border = 0x1AFFFFFF;
+                Text = 0xFFF8FAFC;
+                Sub = 0xFF9CA3AF;
+                Dim = 0xFF64748B;
+                Brand = 0xFF5865F2;
+                break;
+            case "Ash": // Official Discord 2025 Ash
+                Bg = 0xFF2B2D31;
+                Rail = 0xFF1E1F22;
+                Sidebar = 0xFF232428;
+                Panel = 0xFF313338;
+                Card = 0xFF383A40;
+                Border = 0x1EFFFFFF;
+                Text = 0xFFF2F3F5;
+                Sub = 0xFFB5BAC1;
+                Dim = 0xFF80848E;
+                Brand = 0xFF5865F2;
+                break;
+            case "Midnight": // Deep Blue-Violet Midnight
+                Bg = 0xFF0A0E1A;
+                Rail = 0xFF060912;
+                Sidebar = 0xFF0F1526;
+                Panel = 0xFF151C32;
+                Card = 0xFF1C2541;
+                Border = 0x22818CF8;
+                Text = 0xFFF1F5F9;
+                Sub = 0xFF94A3B8;
+                Dim = 0xFF64748B;
+                Brand = 0xFF6366F1;
+                break;
+            default: // "Obsidian" (FluxCord Classic)
+                Bg = 0xFF0C0D10;
+                Rail = 0xFF090A0D;
+                Sidebar = 0xFF121318;
+                Panel = 0xFF171920;
+                Card = 0xFF1D2029;
+                Border = 0x18FFFFFF;
+                Text = 0xFFF3F4F6;
+                Sub = 0xFF9CA3AF;
+                Dim = 0xFF6B7280;
+                Brand = 0xFF5865F2;
+                break;
+        }
+    }
 }
 
 public static class UI
@@ -58,12 +113,12 @@ public static class UI
         return !InputBlocked && Released && _activeId == id && over;
     }
 
-    public static bool Button(int id, R r, string label, uint bg, uint text = Th.Text, float radius = 6f, float fontSize = 13f, int weight = 600)
+    public static bool Button(int id, R r, string label, uint bg, uint text = 0, float radius = 6f, float fontSize = 13f, int weight = 600)
     {
         bool over = Hover(r);
         Gfx.FillRect(r, bg, radius);
         if (over) Gfx.FillRect(r, Th.Hover, radius);
-        Gfx.DrawText(label, new R(r.X + 4, r.Y + (r.H - fontSize * 1.35f) * 0.5f, r.W - 8, fontSize * 1.5f), fontSize, text, weight, 1);
+        Gfx.DrawText(label, new R(r.X + 4, r.Y + (r.H - fontSize * 1.35f) * 0.5f, r.W - 8, fontSize * 1.5f), fontSize, text == 0 ? Th.Text : text, weight, 1);
         return Click(id, r);
     }
 

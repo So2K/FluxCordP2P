@@ -368,6 +368,262 @@ public static unsafe class Gfx
         DC.DrawText(text, f2, new Rect(r.X, r.Y, r.W, r.H), _brush, DrawTextOptions.Clip | DrawTextOptions.EnableColorFont);
     }
 
+    public readonly record struct MdSpan(int Start, int Length, byte Kind, string Meta); // 1=Bold, 2=Italic, 3=Strike, 4=Code, 5=Spoiler, 6=Link, 7=Mention
+
+    private sealed class MdLayoutCache
+    {
+        public IDWriteTextLayout Layout = null!;
+        public List<MdSpan> Spans = [];
+        public float W, H;
+    }
+
+    private static readonly Dictionary<(string Raw, float Size, float MaxW), MdLayoutCache> _mdCache = new();
+
+    private static (string Plain, List<MdSpan> Spans) ParseInlineMarkdown(string raw)
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        var spans = new List<MdSpan>();
+        int i = 0, n = raw.Length;
+
+        while (i < n)
+        {
+            // [label](https://...)
+            if (raw[i] == '[')
+            {
+                int closeBr = raw.IndexOf("](", i + 1, StringComparison.Ordinal);
+                if (closeBr > i + 1)
+                {
+                    int closePar = raw.IndexOf(')', closeBr + 2);
+                    if (closePar > closeBr + 2)
+                    {
+                        string lbl = raw[(i + 1)..closeBr];
+                        string url = raw[(closeBr + 2)..closePar].Trim();
+                        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int st = sb.Length;
+                            sb.Append(lbl);
+                            spans.Add(new MdSpan(st, lbl.Length, 6, url));
+                            i = closePar + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Bare http:// or https://
+            if ((raw[i] == 'h' || raw[i] == 'H') &&
+                (raw.AsSpan(i).StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                 raw.AsSpan(i).StartsWith("http://", StringComparison.OrdinalIgnoreCase)))
+            {
+                int j = i;
+                while (j < n && !char.IsWhiteSpace(raw[j]) && raw[j] != '<' && raw[j] != '>' && raw[j] != '"') j++;
+                while (j > i && (raw[j - 1] is '.' or ',' or ')' or ']' or '!' or '?' or ';')) j--;
+                string url = raw[i..j];
+                int st = sb.Length;
+                sb.Append(url);
+                spans.Add(new MdSpan(st, url.Length, 6, url));
+                i = j;
+                continue;
+            }
+            // ||spoiler||
+            if (i + 3 < n && raw[i] == '|' && raw[i + 1] == '|')
+            {
+                int end = raw.IndexOf("||", i + 2, StringComparison.Ordinal);
+                if (end > i + 2)
+                {
+                    string inner = raw[(i + 2)..end];
+                    int st = sb.Length;
+                    sb.Append(inner);
+                    spans.Add(new MdSpan(st, inner.Length, 5, $"{i}:{end}"));
+                    i = end + 2;
+                    continue;
+                }
+            }
+            // **bold**
+            if (i + 3 < n && raw[i] == '*' && raw[i + 1] == '*')
+            {
+                int end = raw.IndexOf("**", i + 2, StringComparison.Ordinal);
+                if (end > i + 2)
+                {
+                    string inner = raw[(i + 2)..end];
+                    int st = sb.Length;
+                    sb.Append(inner);
+                    spans.Add(new MdSpan(st, inner.Length, 1, ""));
+                    i = end + 2;
+                    continue;
+                }
+            }
+            // ~~strike~~
+            if (i + 3 < n && raw[i] == '~' && raw[i + 1] == '~')
+            {
+                int end = raw.IndexOf("~~", i + 2, StringComparison.Ordinal);
+                if (end > i + 2)
+                {
+                    string inner = raw[(i + 2)..end];
+                    int st = sb.Length;
+                    sb.Append(inner);
+                    spans.Add(new MdSpan(st, inner.Length, 3, ""));
+                    i = end + 2;
+                    continue;
+                }
+            }
+            // `inline code`
+            if (raw[i] == '`')
+            {
+                int end = raw.IndexOf('`', i + 1);
+                if (end > i + 1)
+                {
+                    string inner = raw[(i + 1)..end];
+                    int st = sb.Length;
+                    sb.Append(inner);
+                    spans.Add(new MdSpan(st, inner.Length, 4, ""));
+                    i = end + 1;
+                    continue;
+                }
+            }
+            // *italic*
+            if (raw[i] == '*' && (i + 1 < n && raw[i + 1] != '*' && !char.IsWhiteSpace(raw[i + 1])))
+            {
+                int end = raw.IndexOf('*', i + 1);
+                if (end > i + 1 && !char.IsWhiteSpace(raw[end - 1]))
+                {
+                    string inner = raw[(i + 1)..end];
+                    int st = sb.Length;
+                    sb.Append(inner);
+                    spans.Add(new MdSpan(st, inner.Length, 2, ""));
+                    i = end + 1;
+                    continue;
+                }
+            }
+            // @mention (e.g. @So2K, @everyone)
+            if (raw[i] == '@' && (i == 0 || char.IsWhiteSpace(raw[i - 1])) && i + 1 < n && !char.IsWhiteSpace(raw[i + 1]))
+            {
+                int j = i + 1;
+                while (j < n && !char.IsWhiteSpace(raw[j]) && raw[j] != ',' && raw[j] != ':' && raw[j] != '!') j++;
+                if (j > i + 1)
+                {
+                    string mtxt = raw[i..j];
+                    int st = sb.Length;
+                    sb.Append(mtxt);
+                    spans.Add(new MdSpan(st, mtxt.Length, 7, mtxt));
+                    i = j;
+                    continue;
+                }
+            }
+            sb.Append(raw[i++]);
+        }
+        return (sb.ToString(), spans);
+    }
+
+    private static MdLayoutCache GetOrBuildMarkdown(string raw, float size, float maxW)
+    {
+        float qW = MathF.Ceiling(MathF.Max(32f, maxW) / 4f) * 4f;
+        var key = (raw, size, qW);
+        if (_mdCache.TryGetValue(key, out var cached)) return cached;
+
+        if (_mdCache.Count > 600)
+        {
+            foreach (var v in _mdCache.Values) { try { v.Layout.Dispose(); } catch { } }
+            _mdCache.Clear();
+        }
+
+        var (plain, spans) = ParseInlineMarkdown(raw);
+        var fmt = GetFormat(size, 400, 0, wrap: true);
+        var layout = _dw.CreateTextLayout(plain, fmt, qW, 4096f);
+        foreach (var sp in spans)
+        {
+            if (sp.Length <= 0) continue;
+            var tr = new TextRange((uint)sp.Start, (uint)sp.Length);
+            switch (sp.Kind)
+            {
+                case 1: layout.SetFontWeight(FontWeight.Bold, tr); break;
+                case 2: layout.SetFontStyle(FontStyle.Italic, tr); break;
+                case 3: layout.SetStrikethrough(true, tr); break;
+                case 4: layout.SetFontFamilyName("Consolas", tr); layout.SetFontSize(size * 0.92f, tr); break;
+                case 6: layout.SetUnderline(true, tr); break;
+                case 7: layout.SetFontWeight(FontWeight.SemiBold, tr); break;
+            }
+        }
+        var m = layout.Metrics;
+        cached = new MdLayoutCache { Layout = layout, Spans = spans, W = m.Width, H = m.Height };
+        _mdCache[key] = cached;
+        return cached;
+    }
+
+    public static (float W, float H) MeasureMarkdownText(string raw, float size, float maxW)
+    {
+        if (string.IsNullOrEmpty(raw)) return (0, size * 1.3f);
+        var c = GetOrBuildMarkdown(raw, size, maxW);
+        return (c.W, c.H);
+    }
+
+    public static void DrawMarkdownText(string raw, R r, float size, uint defaultColor, string msgId, HashSet<string> revealedSpoilers, out string? clickedUrl, out string? toggledSpoiler)
+    {
+        clickedUrl = null;
+        toggledSpoiler = null;
+        if (string.IsNullOrEmpty(raw) || r.W <= 1 || r.H <= 1) return;
+
+        var c = GetOrBuildMarkdown(raw, size, r.W);
+        // 1. Background pills for inline code, mentions, and hover highlights for links
+        foreach (var sp in c.Spans)
+        {
+            if (sp.Kind is not (4 or 6 or 7)) continue;
+            try
+            {
+                var metrics = c.Layout.HitTestTextRange((uint)sp.Start, (uint)sp.Length, r.X, r.Y);
+                foreach (var hm in metrics)
+                {
+                    var br = new R(hm.Left - 2f, hm.Top, hm.Width + 4f, hm.Height);
+                    if (sp.Kind == 4) FillRect(br, 0xFF1A1D28, 4f);
+                    else if (sp.Kind == 7) FillRect(br, 0x335865F2, 4f);
+                    else if (sp.Kind == 6)
+                    {
+                        if (UI.Hover(br)) FillRect(br, 0x2238BDF8, 4f);
+                        if (UI.Click(UI.Id("mdlnk_" + msgId, sp.Start), br)) clickedUrl = sp.Meta;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // 2. Draw formatted DirectWrite layout
+        _brush.Color = ToColor4(defaultColor);
+        bool needClip = c.H > r.H + 1f;
+        if (needClip) PushClip(r);
+        DC.DrawTextLayout(new Vector2(r.X, r.Y), c.Layout, _brush, DrawTextOptions.Clip | DrawTextOptions.EnableColorFont);
+
+        // 3. Draw cyan/mention colored overlay accents + interactive spoiler masks on top
+        foreach (var sp in c.Spans)
+        {
+            if (sp.Kind != 5 && sp.Kind != 6) continue;
+            try
+            {
+                var metrics = c.Layout.HitTestTextRange((uint)sp.Start, (uint)sp.Length, r.X, r.Y);
+                if (sp.Kind == 6)
+                {
+                    // Subtle cyan underline glow for links
+                    foreach (var hm in metrics)
+                        FillRect(new R(hm.Left, hm.Top + hm.Height - 1.5f, hm.Width, 1.2f), Th.Cyan);
+                }
+                else if (sp.Kind == 5)
+                {
+                    string spKey = msgId + ":" + sp.Meta;
+                    bool revealed = revealedSpoilers.Contains(spKey);
+                    foreach (var hm in metrics)
+                    {
+                        var sr = new R(hm.Left - 2f, hm.Top, hm.Width + 4f, hm.Height);
+                        if (!revealed)
+                            FillRect(sr, UI.Hover(sr) ? 0xFF2B2F3D : 0xFF1B1E28, 4f);
+                        else
+                            FillRect(sr, 0x22FFFFFF, 4f);
+                        if (UI.Click(UI.Id("mdsp_" + spKey), sr)) toggledSpoiler = spKey;
+                    }
+                }
+            }
+            catch { }
+        }
+        if (needClip) PopClip();
+    }
+
     public static void DrawBitmap(ID2D1Bitmap1 bmp, R dst)
     {
         DC.DrawBitmap(bmp, new System.Drawing.RectangleF(dst.X, dst.Y, dst.W, dst.H), 1f, Vortice.Direct2D1.BitmapInterpolationMode.Linear, null);
@@ -403,6 +659,8 @@ public static unsafe class Gfx
         _iconFormats.Clear();
         foreach (var v in _layouts.Values) { try { v.Layout.Dispose(); } catch { } }
         _layouts.Clear();
+        foreach (var v in _mdCache.Values) { try { v.Layout.Dispose(); } catch { } }
+        _mdCache.Clear();
         foreach (var f in _formats.Values) { try { f.Dispose(); } catch { } }
         _formats.Clear();
         try { if (DC != null) DC.Target = null; } catch { }

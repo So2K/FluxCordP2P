@@ -63,6 +63,55 @@ public static unsafe partial class SoundFx
         Store(UiSound.Message,     BuildNotes([(783.99f, 0.00f, 0.045f, 0.20f), (1046.50f, 0.040f, 0.070f, 0.18f)], vol));
     }
 
+    public static readonly (string Id, string Emoji, string Label)[] SoundboardClips =
+    [
+        ("airhorn",    "📯", "Airhorn"),
+        ("vine_boom",  "💥", "Vine Boom"),
+        ("ba_dum_tss", "🥁", "Ba-Dum-Tss"),
+        ("bruh",       "🗿", "Bruh"),
+        ("quack",      "🦆", "Quack"),
+        ("oof",        "💀", "Oof"),
+        ("wow",        "✨", "Wow"),
+        ("gg",         "🏆", "GG EZ")
+    ];
+
+    private static readonly Dictionary<string, (nint Ptr, int Len)> _sbWavs = new();
+    private static float _builtSbVol = -1f;
+
+    public static void PlaySoundboard(string soundId)
+    {
+        var s = SettingsStore.Current;
+        if (s.SoundboardVolume <= 0.01f || s.StreamerMode) return;
+        float vol = Math.Clamp(s.SoundboardVolume, 0f, 1f);
+        lock (_lock)
+        {
+            if (_sbWavs.Count == 0 || MathF.Abs(vol - _builtSbVol) >= 0.02f)
+            {
+                PlaySoundW(null, 0, 0);
+                foreach (var kv in _sbWavs.Values) if (kv.Ptr != 0) NativeMemory.Free((void*)kv.Ptr);
+                _sbWavs.Clear();
+                _builtSbVol = vol;
+                StoreSb("airhorn",    BuildNotes([(466.16f, 0.00f, 0.10f, 0.42f), (466.16f, 0.12f, 0.10f, 0.42f), (466.16f, 0.24f, 0.45f, 0.48f), (587.33f, 0.24f, 0.45f, 0.28f)], vol));
+                StoreSb("vine_boom",  BuildNotes([(98.00f, 0.00f, 0.18f, 0.55f), (65.41f, 0.02f, 0.55f, 0.65f), (49.00f, 0.04f, 0.65f, 0.55f)], vol));
+                StoreSb("ba_dum_tss", BuildNotes([(146.83f, 0.00f, 0.10f, 0.40f), (110.00f, 0.13f, 0.12f, 0.42f), (1760.0f, 0.28f, 0.22f, 0.22f), (2349.3f, 0.28f, 0.26f, 0.18f)], vol));
+                StoreSb("bruh",       BuildNotes([(164.81f, 0.00f, 0.14f, 0.42f), (138.59f, 0.10f, 0.22f, 0.40f), (116.54f, 0.22f, 0.24f, 0.36f)], vol));
+                StoreSb("quack",      BuildNotes([(523.25f, 0.00f, 0.06f, 0.35f), (659.25f, 0.04f, 0.08f, 0.38f), (493.88f, 0.10f, 0.09f, 0.32f)], vol));
+                StoreSb("oof",        BuildNotes([(311.13f, 0.00f, 0.07f, 0.42f), (233.08f, 0.06f, 0.14f, 0.40f)], vol));
+                StoreSb("wow",        BuildNotes([(392.00f, 0.00f, 0.10f, 0.32f), (523.25f, 0.08f, 0.12f, 0.35f), (659.25f, 0.16f, 0.18f, 0.38f), (783.99f, 0.26f, 0.24f, 0.36f)], vol));
+                StoreSb("gg",         BuildNotes([(523.25f, 0.00f, 0.08f, 0.34f), (659.25f, 0.08f, 0.08f, 0.34f), (783.99f, 0.16f, 0.08f, 0.36f), (1046.50f, 0.24f, 0.28f, 0.42f)], vol));
+            }
+            if (_sbWavs.TryGetValue(soundId, out var entry) && entry.Ptr != 0 && entry.Len >= 44)
+                PlaySoundW((byte*)entry.Ptr, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT | SND_NOWAIT);
+        }
+    }
+
+    private static void StoreSb(string key, byte[] wav)
+    {
+        void* mem = NativeMemory.Alloc((nuint)wav.Length);
+        fixed (byte* src = wav) Buffer.MemoryCopy(src, mem, (nuint)wav.Length, (nuint)wav.Length);
+        _sbWavs[key] = ((nint)mem, wav.Length);
+    }
+
     public static void EnsureBuilt()
     {
         float vol = Math.Clamp(SettingsStore.Current.UiSoundsVolume, 0f, 1f);

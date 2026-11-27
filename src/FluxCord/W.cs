@@ -19,7 +19,8 @@ internal static unsafe partial class W
         WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084, WM_SETICON = 0x0080;
     public const uint MOD_ALT = 0x0001, MOD_CONTROL = 0x0002, MOD_SHIFT = 0x0004, MOD_NOREPEAT = 0x4000;
     public const uint NIM_ADD = 0x00000000, NIM_MODIFY = 0x00000001, NIM_DELETE = 0x00000002,
-        NIF_MESSAGE = 0x00000001, NIF_ICON = 0x00000002, NIF_TIP = 0x00000004;
+        NIF_MESSAGE = 0x00000001, NIF_ICON = 0x00000002, NIF_TIP = 0x00000004, NIF_INFO = 0x00000010,
+        NIIF_INFO = 0x00000001, NIIF_NOSOUND = 0x00000010;
     public const uint MF_STRING = 0x0000, MF_CHECKED = 0x0008, MF_SEPARATOR = 0x0800;
     public const uint TPM_RIGHTBUTTON = 0x0002, TPM_BOTTOMALIGN = 0x0020, TPM_NONOTIFY = 0x0080, TPM_RETURNCMD = 0x0100;
     public const uint IMAGE_ICON = 1, LR_DEFAULTSIZE = 0x0040;
@@ -236,6 +237,37 @@ internal static unsafe partial class W
 
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool UnregisterHotKey(nint hWnd, int id);
+
+    [StructLayout(LayoutKind.Sequential)] public struct BLENDFUNCTION { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
+    [StructLayout(LayoutKind.Sequential)] public struct BITMAPINFO { public uint biSize; public int biWidth, biHeight; public ushort biPlanes, biBitCount; public uint biCompression, biSizeImage; public int biXPelsPerMeter, biYPelsPerMeter; public uint biClrUsed, biClrImportant; }
+    [LibraryImport("user32.dll")] public static partial nint GetDC(nint hWnd);
+    [LibraryImport("user32.dll")] public static partial int ReleaseDC(nint hWnd, nint hDC);
+    [LibraryImport("gdi32.dll")] public static partial nint CreateCompatibleDC(nint hdc);
+    [LibraryImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool DeleteDC(nint hdc);
+    [LibraryImport("gdi32.dll")] public static partial nint SelectObject(nint hdc, nint h);
+    [LibraryImport("gdi32.dll")] public static partial nint CreateDIBSection(nint hdc, BITMAPINFO* pbmi, uint usage, out byte* ppvBits, nint hSection, uint offset);
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)] public static partial int DrawTextW(nint hdc, string lpchText, int cchText, RECT* lprc, uint format);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool UpdateLayeredWindow(nint hWnd, nint hdcDst, POINT* pptDst, POINT* psize, nint hdcSrc, POINT* pptSrc, uint crKey, BLENDFUNCTION* pblend, uint dwFlags);
+
+    public static string FormatHotkey(uint mod, uint vk)
+    {
+        var parts = new List<string>();
+        if ((mod & MOD_CONTROL) != 0) parts.Add("Ctrl");
+        if ((mod & MOD_SHIFT) != 0) parts.Add("Shift");
+        if ((mod & MOD_ALT) != 0) parts.Add("Alt");
+        string kn = vk switch
+        {
+            >= 0x41 and <= 0x5A => ((char)vk).ToString(),
+            >= 0x30 and <= 0x39 => ((char)vk).ToString(),
+            >= 0x70 and <= 0x7B => $"F{vk - 0x6F}",
+            0x20 => "Space",
+            0xC0 => "`",
+            0x09 => "Tab",
+            _ => $"0x{vk:X2}"
+        };
+        parts.Add(kn);
+        return string.Join("+", parts);
+    }
     [LibraryImport("advapi32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int RegCreateKeyExW(nint hKey, string lpSubKey, uint reserved, string? lpClass, uint dwOptions, uint samDesired, nint lpSecurityAttributes, out nint phkResult, out uint lpdwDisposition);
     [LibraryImport("advapi32.dll", StringMarshalling = StringMarshalling.Utf16)]

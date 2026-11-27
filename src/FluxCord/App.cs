@@ -27,17 +27,42 @@ public static unsafe class App
 
     private const int HotkeyMuteId = 101;
     private const int HotkeyDeafenId = 102;
+    private const int HotkeyOverlayId = 103;
+    public static int CapturingHotkeySlot; // 0=none, 1=Mute, 2=Deafen, 3=Overlay
 
     public static void SyncGlobalHotkeys()
     {
         if (Hwnd == 0 || BenchArg) return;
         W.UnregisterHotKey(Hwnd, HotkeyMuteId);
         W.UnregisterHotKey(Hwnd, HotkeyDeafenId);
-        if (SettingsStore.Current.GlobalHotkeys)
+        W.UnregisterHotKey(Hwnd, HotkeyOverlayId);
+        var s = SettingsStore.Current;
+        if (s.GlobalHotkeys)
         {
-            W.RegisterHotKey(Hwnd, HotkeyMuteId, W.MOD_CONTROL | W.MOD_SHIFT | W.MOD_NOREPEAT, (uint)W.VK_M);
-            W.RegisterHotKey(Hwnd, HotkeyDeafenId, W.MOD_CONTROL | W.MOD_SHIFT | W.MOD_NOREPEAT, (uint)W.VK_D);
+            if (s.HotkeyMuteVk != 0) W.RegisterHotKey(Hwnd, HotkeyMuteId, s.HotkeyMuteMod | W.MOD_NOREPEAT, s.HotkeyMuteVk);
+            if (s.HotkeyDeafenVk != 0) W.RegisterHotKey(Hwnd, HotkeyDeafenId, s.HotkeyDeafenMod | W.MOD_NOREPEAT, s.HotkeyDeafenVk);
+            if (s.HotkeyOverlayVk != 0) W.RegisterHotKey(Hwnd, HotkeyOverlayId, s.HotkeyOverlayMod | W.MOD_NOREPEAT, s.HotkeyOverlayVk);
         }
+    }
+
+    public static void ShowTrayBalloon(string title, string body)
+    {
+        if (Hwnd == 0 || _shuttingDown || BenchArg || !_trayAdded) return;
+        var nid = new W.NOTIFYICONDATAW
+        {
+            cbSize = (uint)sizeof(W.NOTIFYICONDATAW),
+            hWnd = Hwnd,
+            uID = TrayIconId,
+            uFlags = W.NIF_INFO,
+            dwInfoFlags = W.NIIF_INFO | W.NIIF_NOSOUND
+        };
+        string t = title.Length > 60 ? title[..60] : title;
+        string b = body.Length > 240 ? body[..240] : body;
+        for (int i = 0; i < t.Length; i++) nid.szInfoTitle[i] = t[i];
+        nid.szInfoTitle[t.Length] = '\0';
+        for (int i = 0; i < b.Length; i++) nid.szInfo[i] = b[i];
+        nid.szInfo[b.Length] = '\0';
+        W.Shell_NotifyIconW(W.NIM_MODIFY, &nid);
     }
 
     private static nint _chatEdit, _tokenEdit, _searchEdit, _editFont, _editBrush, _blackBrush;
@@ -348,6 +373,8 @@ public static unsafe class App
                 W.KillTimer(Hwnd, 99);
                 W.UnregisterHotKey(Hwnd, HotkeyMuteId);
                 W.UnregisterHotKey(Hwnd, HotkeyDeafenId);
+                W.UnregisterHotKey(Hwnd, HotkeyOverlayId);
+                GameOverlay.Destroy();
                 SaveWindowBoundsIfNormal();
                 RemoveTrayIcon();
                 for (int i = 0; i < _trayStateIcons.Length; i++)
@@ -1107,7 +1134,34 @@ public static unsafe class App
                 case W.WM_HOTKEY:
                     if ((int)w == HotkeyMuteId) { Shell.ToggleMute(); return 0; }
                     if ((int)w == HotkeyDeafenId) { Shell.ToggleDeafen(); return 0; }
+                    if ((int)w == HotkeyOverlayId)
+                    {
+                        SettingsStore.Current.GameOverlayEnabled = !SettingsStore.Current.GameOverlayEnabled;
+                        SettingsStore.Save();
+                        GameOverlay.Tick();
+                        Shell.NotifyOverlayToggled();
+                        return 0;
+                    }
                     return 0;
+                case W.WM_KEYDOWN when CapturingHotkeySlot != 0:
+                {
+                    int vk = (int)w;
+                    if (vk == W.VK_ESCAPE) { CapturingHotkeySlot = 0; Invalidate(); return 0; }
+                    if (vk is W.VK_CONTROL or W.VK_SHIFT or W.VK_MENU or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5) return 0;
+                    uint mod = 0;
+                    if (W.KeyDown(W.VK_CONTROL)) mod |= W.MOD_CONTROL;
+                    if (W.KeyDown(W.VK_SHIFT)) mod |= W.MOD_SHIFT;
+                    if (W.KeyDown(W.VK_MENU)) mod |= W.MOD_ALT;
+                    var st = SettingsStore.Current;
+                    if (CapturingHotkeySlot == 1) { st.HotkeyMuteMod = mod; st.HotkeyMuteVk = (uint)vk; }
+                    else if (CapturingHotkeySlot == 2) { st.HotkeyDeafenMod = mod; st.HotkeyDeafenVk = (uint)vk; }
+                    else if (CapturingHotkeySlot == 3) { st.HotkeyOverlayMod = mod; st.HotkeyOverlayVk = (uint)vk; }
+                    CapturingHotkeySlot = 0;
+                    SettingsStore.Save();
+                    SyncGlobalHotkeys();
+                    Invalidate();
+                    return 0;
+                }
                 case W.WM_KEYDOWN when (int)w == W.VK_K && W.KeyDown(W.VK_CONTROL):
                     Shell.ToggleQuickSwitch();
                     return 0;
