@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $root = 'C:\Users\User\Projects\FluxCordP2P'
-$ver = '2.3.0'
+$ver = '2.3.1'
 $repo = 'So2K/FluxCordP2P'
 $cleanZip = "$root\dist\FluxCordP2P-$ver-win-x64.zip"
 $setupExe = "$root\dist\FluxCordP2P-Setup.exe"
